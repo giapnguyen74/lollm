@@ -31,6 +31,32 @@ safetensors **and** GGUF. PyTorch is the only dependency for the actual model ma
    `compare_logits.py` to validate any model/architecture before trusting its
    output** — it's how we catch a wrong RoPE, norm, or weight map.
 
+## Install
+
+Dependencies live in `pyproject.toml`. Use a **virtual environment** so this stays
+isolated from your system Python.
+
+```bash
+# 1. create + activate a venv (Python ≥ 3.10)
+python3 -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+
+# 2. install the project (reads dependencies from pyproject.toml)
+pip install -e .                  # editable: src/ changes take effect immediately
+
+# (when you're done) deactivate
+```
+
+`pip install -e .` pulls in torch, numpy, safetensors, transformers,
+huggingface_hub, regex, and jinja2 (the floors pinned in `pyproject.toml`) and exposes
+two console scripts — `lollm` (run) and `compare` (parity gate). The `python src/...`
+commands below work the same; the scripts are just shortcuts.
+
+> **Note:** `pyproject.toml` pins dependency *floors* known to work. For an exact,
+> reproducible environment, freeze your versions: `pip freeze > requirements.lock`.
+
+## Quickstart
+
 ```bash
 # safetensors (HF repo / local dir)
 python src/run.py --model Qwen/Qwen2.5-0.5B-Instruct --prompt "Explain RoPE in one line."
