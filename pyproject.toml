@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lollm"
+version = "0.1.0"
+description = "A study-first LLM inference engine (qwen2 / qwen3 / gemma2, safetensors + GGUF)."
+readme = "README.md"
+requires-python = ">=3.10"
+
+# Pinned to reduce dependency mismatch. These are *floors* known to work with the
+# APIs we use (PyTorch SDPA + meta-device load, transformers `dtype=` + chat
+# templates, etc.). For an exact, reproducible environment, tighten these to your
+# installed versions — e.g. `pip freeze | grep -E 'torch|transformers|...'` and
+# replace `>=` with `==`, or use a lock (`uv lock` / `pip-compile`).
+dependencies = [
+    "torch>=2.2",            # scaled_dot_product_attention, `with torch.device('meta')`
+    "numpy>=1.24",           # GGUF reader + dequant
+    "safetensors>=0.4",      # safetensors weight loading
+    "transformers>=4.46",    # AutoTokenizer (safetensors path) + `dtype=` (compare_logits)
+    "huggingface_hub>=0.24", # download / resolve `repo` and `repo:QUANT`
+    "regex>=2024.0",         # SentencePiece / BPE pre-tokenization (\p{L}, \p{N})
+    "jinja2>=3.1",           # render the GGUF-embedded chat template (SPM path)
+]
+
+[project.scripts]
+lollm = "run:main"
+compare = "compare_logits:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

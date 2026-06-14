@@ -1,0 +1,53 @@
+<svg viewBox="0 0 760 440" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, sans-serif" role="img">
+  <title>Q4_K superblock byte layout</title>
+  <desc>A Q4_K superblock packs 256 weights into 144 bytes: a 2-byte super-scale d, a 2-byte super-min dmin, 12 bytes of packed 6-bit sub-block scales and mins, and 128 bytes of 4-bit quantized weights.</desc>
+  <rect x="0" y="0" width="760" height="440" fill="#ffffff"/>
+
+  <text x="30" y="34" font-size="15" fill="#111827" font-weight="600">Q4_K superblock = 256 weights in 144 bytes  (4.5 bits/weight)</text>
+  <text x="30" y="54" font-size="11" fill="#6b7280">256 weights = 8 sub-blocks × 32 weights. Boxes not to scale.</text>
+
+  <!-- region boxes -->
+  <!-- d -->
+  <rect x="30" y="78" width="90" height="64" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="75" y="104" text-anchor="middle" font-size="14" fill="#2563eb">d</text>
+  <text x="75" y="122" text-anchor="middle" font-size="10" fill="#2563eb">fp16 · 2 B</text>
+  <text x="75" y="136" text-anchor="middle" font-size="9" fill="#6b7280">super-scale</text>
+
+  <!-- dmin -->
+  <rect x="128" y="78" width="90" height="64" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="173" y="104" text-anchor="middle" font-size="14" fill="#2563eb">dmin</text>
+  <text x="173" y="122" text-anchor="middle" font-size="10" fill="#2563eb">fp16 · 2 B</text>
+  <text x="173" y="136" text-anchor="middle" font-size="9" fill="#6b7280">super-min</text>
+
+  <!-- scales -->
+  <rect x="226" y="78" width="170" height="64" rx="8" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="311" y="102" text-anchor="middle" font-size="13" fill="#111827">scales · 12 B</text>
+  <text x="311" y="120" text-anchor="middle" font-size="9.5" fill="#6b7280">8 × 6-bit scale  +  8 × 6-bit min</text>
+  <text x="311" y="134" text-anchor="middle" font-size="9.5" fill="#6b7280">(one pair per sub-block)</text>
+
+  <!-- qs -->
+  <rect x="404" y="78" width="326" height="64" rx="8" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="567" y="102" text-anchor="middle" font-size="13" fill="#111827">qs · 128 B  — the actual weights</text>
+  <text x="567" y="120" text-anchor="middle" font-size="9.5" fill="#6b7280">256 × 4-bit quants (0–15), two per byte</text>
+  <text x="567" y="134" text-anchor="middle" font-size="9.5" fill="#9ca3af">≈ 89% of the block</text>
+
+  <!-- brace to reconstruction -->
+  <line x1="311" y1="142" x2="311" y2="176" stroke="#9ca3af" stroke-width="1" stroke-dasharray="3 3"/>
+  <line x1="567" y1="142" x2="567" y2="176" stroke="#9ca3af" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <!-- reconstruction box -->
+  <rect x="30" y="186" width="700" height="92" rx="10" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="46" y="210" font-size="12" fill="#111827" font-weight="600">Reconstruction — weight i in sub-block j:</text>
+  <text x="46" y="242" font-size="17" fill="#2563eb" font-family="ui-monospace, monospace">w = d · scale_j · q_i  −  dmin · min_j</text>
+  <text x="46" y="266" font-size="10.5" fill="#6b7280">q_i ∈ [0,15] (4-bit) · scale_j, min_j ∈ [0,63] (6-bit) · d, dmin are fp16 super-scales shared by all 256</text>
+
+  <!-- two-level scaling note -->
+  <text x="30" y="316" font-size="12" fill="#111827" font-weight="600">Why two levels of scaling?</text>
+  <text x="30" y="338" font-size="11" fill="#6b7280">Each 32-weight sub-block gets its own 6-bit scale &amp; min (local adaptation), and those</text>
+  <text x="30" y="354" font-size="11" fill="#6b7280">8 small scales are themselves scaled by one fp16 super-scale d. Local precision where it</text>
+  <text x="30" y="370" font-size="11" fill="#6b7280">matters, cheap shared range overall — this is what makes K-quants beat legacy Q4_0.</text>
+
+  <!-- size math -->
+  <rect x="30" y="392" width="700" height="34" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.2"/>
+  <text x="46" y="414" font-size="11" fill="#2563eb">size = 2 (d) + 2 (dmin) + 12 (scales) + 128 (qs) = 144 B  ÷ 256 weights = 4.5 bits / weight</text>
+</svg>
