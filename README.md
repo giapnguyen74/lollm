@@ -55,6 +55,54 @@ commands below work the same; the scripts are just shortcuts.
 > **Note:** `pyproject.toml` pins dependency *floors* known to work. For an exact,
 > reproducible environment, freeze your versions: `pip freeze > requirements.lock`.
 
+### Hardware / backend
+
+> ⚠️ **Currently validated only on Apple Silicon (Mac M-series, MPS).** The code is
+> written against the generic `torch`/`nn` API and *should* run on CUDA and CPU, but
+> those paths haven't been verified end-to-end yet. Treat them as untested.
+
+The PyTorch **version** (`torch>=2.2`) and the **backend** (CPU / CUDA / ROCm / MPS)
+are separate: the version is pinned here, but the backend is chosen at *install time*
+by which wheel index you pull from — `pyproject.toml` can't pick it for you (there's
+no way to detect a GPU from a dependency spec). So install `torch` first for your
+hardware, then `pip install -e .` (which leaves your chosen build in place):
+
+```bash
+# macOS / Apple Silicon — the default wheel already includes CPU + MPS (the tested path)
+pip install torch
+
+# NVIDIA (CUDA) — pick the tag matching your driver; see the selector linked below
+pip install torch --index-url https://download.pytorch.org/whl/cu126
+
+# AMD (ROCm, Linux) — exposes the device as "cuda" in code
+pip install torch --index-url https://download.pytorch.org/whl/rocm7.1
+
+# CPU-only (any OS)
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+pip install -e .                  # then the rest of the deps
+```
+
+Compute tags (`cu126`, `cu128`, `rocm7.1`, …) change over time — the official
+[PyTorch Get Started selector](https://pytorch.org/get-started/locally/) always
+generates the current command for your OS + CUDA version. (For a locked, per-backend
+setup, [uv](https://docs.astral.sh/uv/guides/integration/pytorch/) can declare the
+torch index in `pyproject.toml` with platform markers.)
+
+**Verify what you got.** `run.py` auto-detects the device (cuda → mps → cpu) and the
+matching dtype, so check it landed where you expect:
+
+```python
+import torch
+print(torch.__version__)                  # the +cuXYZ / +cpu suffix tells you the backend
+print(torch.backends.mps.is_available())  # Apple Metal (the validated path)
+print(torch.cuda.is_available())          # NVIDIA / ROCm
+```
+
+`run.py` already maps each backend to its fast dtype — **bfloat16** on CUDA,
+**float16** on MPS, **float32** on CPU — so once the right wheel is installed the
+engine adapts automatically.
+
 ## Quickstart
 
 ```bash
