@@ -17,6 +17,10 @@ STEP 4 (family cache + wired forward): run the whole hybrid model and verify a f
 prefill matches token-by-token incremental decode (both mixers' caches + the position
 counter), plus per-layer cache state shapes.
 
+STEP 6 (MTP head): load the `mtp.*` head (name map + shapes) and run the speculative
+forward predicting token t+2. Structural only — no transformers class implements MTP, so
+there is no reference to numerically compare against (unlike step-5 parity).
+
 Run in your venv (needs torch):  python src/qwen3_5_selftest.py
 """
 
@@ -233,11 +237,49 @@ def check_step4():
     print("step4: family cache + wired forward — prefill==incremental decode (hybrid stack) OK")
 
 
+def check_step6():
+    torch.manual_seed(0)
+    from qwen3_5.mtp import MTP, load_mtp, speculate
+    cfg = Qwen3_5Config.from_hf(tiny_raw())
+    model = Qwen3_5Model(cfg).eval()              # random init
+
+    # expected MTP params → fake checkpoint weights keyed by the RAW (mtp.*) names
+    with torch.device("meta"):
+        skel = MTP(cfg)
+    names = {n: tuple(p.shape) for n, p in skel.named_parameters()}
+    raw = {W.to_raw("mtp." + n, "hf"): torch.randn(*s) for n, s in names.items()}
+    # names land top-level as mtp.* (matches the checkpoint's `^mtp.*` ignore regex)
+    assert W.to_raw("mtp.fc.weight", "hf") == "mtp.fc.weight"
+    assert names["fc.weight"] == (cfg.hidden_size, 2 * cfg.hidden_size)
+    assert names["layers.0.self_attn.q_proj.weight"] == (cfg.num_attention_heads * cfg.head_dim * 2,
+                                                         cfg.hidden_size)
+
+    mtp = load_mtp(model, dict(raw), "hf", "cpu", torch.float32)
+
+    # speculative forward: predict token t+2 → logits (B, T-1, vocab)
+    B, T = 1, 9
+    ids = torch.randint(0, cfg.vocab_size, (B, T))
+    logits = speculate(model, mtp, ids)
+    assert logits.shape == (B, T - 1, cfg.vocab_size), logits.shape
+    assert torch.isfinite(logits).all()
+
+    # fail-loud on a missing MTP tensor
+    bad = dict(raw); bad.pop(W.to_raw("mtp.norm.weight", "hf"))
+    try:
+        load_mtp(model, bad, "hf", "cpu", torch.float32)
+        raise AssertionError("expected RuntimeError (missing tensor)")
+    except RuntimeError as e:
+        assert "missing tensor" in str(e), e
+    print("step6: MTP head — mtp.* name map + shapes + speculative t+2 forward OK "
+          "(structural; no transformers reference exists)")
+
+
 def main():
     check_step1()
     check_step2()
     check_step3()
     check_step4()
+    check_step6()
     print("QWEN3_5 SELFTEST: PASS ✅")
 
 

@@ -180,8 +180,12 @@ Shape: it reuses the main `embed_tokens` (`mtp_use_dedicated_embeddings: false`)
 shared `lm_head`. To predict token *t+2*: norm the previous hidden state and the *t+1*
 token embedding, concat → `fc` → one decoder layer → `mtp.norm` → `lm_head`.
 
-→ Plan unchanged: **land the base LM first** (it validates without MTP), then add MTP as a
-step-6 module now that its structure is confirmed (no guessing required).
+→ Plan executed: base LM landed and parity-passed first; MTP added as the opt-in step-6
+module (`mtp.py`, top-level `mtp.*` weights, shared embeddings + lm_head). **Caveat:** no
+`transformers` class implements MTP (every variant lists `mtp.*` as ignored), so there is
+no reference to numerically parity-check it — the module matches the checkpoint's tensor
+layout and follows the documented Eagle forward, validated structurally (loads, runs,
+correct shapes) rather than by a logit comparison.
 
 ## Tensor names (confirmed from `Qwen/Qwen3.5-4B` index)
 

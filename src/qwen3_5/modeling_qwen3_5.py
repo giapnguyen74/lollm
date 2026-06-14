@@ -36,9 +36,11 @@ class DecoderLayer(nn.Module):
     RoPE); the rest are Gated DeltaNet (linear attention). `state` is this layer's slot in
     the family cache — KV tuple or (conv, recurrent) pair — and is threaded back out."""
 
-    def __init__(self, cfg: Qwen3_5Config, layer_idx: int):
+    def __init__(self, cfg: Qwen3_5Config, layer_idx: int, layer_type: str | None = None):
         super().__init__()
-        self.layer_type = cfg.layer_type(layer_idx)
+        # `layer_type` override lets the MTP head reuse this block as a forced
+        # full-attention layer without depending on its position in the schedule.
+        self.layer_type = layer_type or cfg.layer_type(layer_idx)
         self.input_layernorm = RMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
         if self.layer_type == "full_attention":
             self.self_attn = GatedAttention(cfg)          # HF name: self_attn
@@ -81,7 +83,7 @@ class Qwen3_5Model(nn.Module):
         return self._rope
 
     @torch.no_grad()
-    def forward(self, input_ids, past=None):
+    def forward(self, input_ids, past=None, return_hidden=False):
         b, t = input_ids.shape
         # 1. EMBED.
         x = self.model.embed_tokens(input_ids)
@@ -93,7 +95,11 @@ class Qwen3_5Model(nn.Module):
         # 3. DECODER STACK — each layer reads/writes its own cache slot.
         for i, layer in enumerate(self.model.layers):
             x, cache.layers[i] = layer(x, cos, sin, cache.layers[i], use_cache=True)
+        # 4. FINAL NORM + 5. LM HEAD. (the pre-norm hidden is what the MTP head consumes)
+        hidden = x
         cache.seen_tokens = past_len + t
-        # 4. FINAL NORM + 5. LM HEAD.
-        x = self.model.norm(x)
-        return self.lm_head(x), cache
+        normed = self.model.norm(hidden)
+        logits = self.lm_head(normed)
+        if return_hidden:
+            return logits, cache, hidden
+        return logits, cache
