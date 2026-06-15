@@ -45,9 +45,12 @@ def resolve_sampling(gen_sampling, fam_defaults, user):
     return out
 
 
-def encode_prompt(tok, prompt, no_chat):
+def encode_prompt(tok, prompt, no_chat, think=False):
     if not no_chat and tok.chat_template:
-        return tok.apply_chat(prompt)
+        try:
+            return tok.apply_chat(prompt, enable_thinking=think)
+        except TypeError:                       # tokenizer's apply_chat takes no such kwarg
+            return tok.apply_chat(prompt)
     return tok.encode(prompt)
 
 
@@ -62,6 +65,9 @@ def main():
     p.add_argument("--repetition-penalty", type=float, default=None)
     p.add_argument("--device", default="auto")
     p.add_argument("--no-chat", action="store_true")
+    p.add_argument("--think", action="store_true",
+                   help="enable Qwen3.5 thinking mode (reason in <think>…</think> first); "
+                        "default off → direct answer")
     p.add_argument("--mtp", action="store_true",
                    help="self-speculative decoding via the MTP head (qwen3_5 only)")
     args = p.parse_args()
@@ -82,7 +88,7 @@ def main():
          "top_p": args.top_p, "repetition_penalty": args.repetition_penalty})
     stop_ids = L.gen_meta["stop_ids"]            # loader populates for both formats
 
-    ids = encode_prompt(L.tokenizer, args.prompt, args.no_chat)
+    ids = encode_prompt(L.tokenizer, args.prompt, args.no_chat, args.think)
     decode = L.tokenizer.decode                  # uniform: decode(ids) -> str
 
     # --mtp: self-speculative decoding via the family's MTP head (qwen3_5 only). The base
@@ -99,6 +105,10 @@ def main():
                            max_new_tokens=args.max_new_tokens, **sampling)
 
     print(f"\n>>> {args.prompt}\n", file=sys.stderr)
+    # In thinking mode the template opened `<think>` inside the PROMPT (so the model never
+    # emits the opening tag); echo it so the streamed output is self-contained.
+    if args.think and not args.no_chat:
+        print("<think>", flush=True)
     n, t0 = 0, time.time()
     for piece in gen:
         print(piece, end="", flush=True)

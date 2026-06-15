@@ -62,9 +62,14 @@ class HFTokenizer:
     def encode(self, text):
         return self._as_ids(self.tk(text))
 
-    def apply_chat(self, prompt):
+    def apply_chat(self, prompt, enable_thinking=None):
+        # Qwen3/Qwen3.5 templates branch on `enable_thinking`: undefined/true opens a
+        # `<think>\n` block (model reasons first), false injects an empty `<think>\n\n</think>`
+        # so it answers directly. Forward it only when set, so other templates are unaffected.
+        kw = {} if enable_thinking is None else {"enable_thinking": enable_thinking}
         return self._as_ids(self.tk.apply_chat_template(
-            [{"role": "user", "content": prompt}], add_generation_prompt=True, tokenize=True))
+            [{"role": "user", "content": prompt}],
+            add_generation_prompt=True, tokenize=True, **kw))
 
     def decode(self, ids):
         return self.tk.decode(ids, skip_special_tokens=True)
