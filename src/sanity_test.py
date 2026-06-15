@@ -26,9 +26,8 @@ MODELS = [
     ("qwen2",   "Qwen/Qwen2.5-0.5B-Instruct"),
     ("qwen3",   "Qwen/Qwen3-0.5B"),
     ("qwen3_5", "Qwen/Qwen3.5-0.5B"),
-    ("gemma2",  "google/gemma-2-1b-it"),
-    ("gemma3",  "google/gemma-3-1b-it"),
-    ("gpt_oss", "OpenAI/gpt-oss-20b"),
+    ("gemma2",  "google/gemma-2-2b-it"),
+    ("gemma3",  "google/gemma-3-1b-it")
 ]
 
 
