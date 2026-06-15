@@ -87,6 +87,81 @@ def speculate(model, mtp: MTP, input_ids):
     return model.lm_head(x)
 
 
+@torch.no_grad()
+def generate_mtp(model, mtp: MTP, ids, decode, stop_ids, device, *, max_new_tokens=128,
+                 temperature=0.7, top_k=20, top_p=0.8, repetition_penalty=1.1):
+    """
+    Self-speculative decoding with the MTP head — a drop-in for `generate.generate` used by
+    `run.py --mtp`. Each step the MTP head cheaply drafts token t+2, then ONE batched main
+    forward over [pending, draft] verifies it: accept → two tokens committed for ~one main
+    pass; reject → restore the pre-verify cache and re-run the single confirmed token.
+
+    Output equals greedy autoregressive decoding exactly (the draft is only ever *accepted*
+    when it matches the main model's own next token). With sampling (`temperature > 0`) it is
+    a close approximation, not a formal lossless rejection sampler. The MTP block's internal
+    position offset is unverifiable but irrelevant to correctness here: a wrong draft is
+    simply rejected, so it can only cost speed, never accuracy.
+    """
+    from generate import sample_next
+
+    eos = set(stop_ids)
+    context = list(ids)
+    generated, prev = [], ""
+
+    def flush():
+        nonlocal prev
+        text = decode(generated)
+        if len(text) > len(prev):
+            piece, prev = text[len(prev):], text
+            return piece
+        return None
+
+    # prefill → first pending token (not yet in the cache)
+    logits, past, hidden = model(torch.tensor([ids], device=device), return_hidden=True)
+    hidden_last = hidden[:, -1:]                                   # main hidden at last position
+    pending = sample_next(logits[0, -1], temperature, top_k, top_p, repetition_penalty, context)
+
+    produced = 0
+    while produced < max_new_tokens:
+        if pending in eos:
+            break
+        # emit `pending` (always a confirmed token)
+        generated.append(pending); context.append(pending); produced += 1
+        piece = flush()
+        if piece:
+            yield piece
+        if produced >= max_new_tokens:
+            break
+
+        # 1. DRAFT t+2 cheaply: MTP(hidden_{t}, emb(pending)) → argmax
+        emb = model.model.embed_tokens(torch.tensor([[pending]], device=device))
+        draft = int(model.lm_head(mtp(hidden_last, emb))[0, -1].argmax())
+
+        # 2. VERIFY: snapshot, then one batched main pass over [pending, draft]
+        snap = past.clone()
+        two = torch.tensor([[pending, draft]], device=device)
+        logits2, past, hidden2 = model(two, past, return_hidden=True)
+        true_next = sample_next(logits2[0, 0], temperature, top_k, top_p, repetition_penalty, context)
+
+        # 3. ACCEPT / REJECT
+        if draft == true_next:
+            if draft in eos:
+                break                                              # next real token is eos → stop
+            generated.append(draft); context.append(draft); produced += 1
+            piece = flush()
+            if piece:
+                yield piece
+            pending = sample_next(logits2[0, 1], temperature, top_k, top_p, repetition_penalty, context)
+            hidden_last = hidden2[:, 1:2]
+        else:
+            # draft wrong: roll back the speculative pass, commit only `pending`
+            past = snap
+            one = torch.tensor([[pending]], device=device)
+            _, past, hidden1 = model(one, past, return_hidden=True)
+            pending = true_next
+            hidden_last = hidden1[:, -1:]
+
+
 def _mtp_raw(canonical: str, fmt: str, to_raw):
     """MTP params live top-level as `mtp.*` in the checkpoint (the CausalLM's ignore regex
     is `^mtp.*`), so prefix our module-local names and reuse the family name map."""

@@ -62,6 +62,8 @@ def main():
     p.add_argument("--repetition-penalty", type=float, default=None)
     p.add_argument("--device", default="auto")
     p.add_argument("--no-chat", action="store_true")
+    p.add_argument("--mtp", action="store_true",
+                   help="self-speculative decoding via the MTP head (qwen3_5 only)")
     args = p.parse_args()
 
     device = pick_device(args.device)
@@ -83,10 +85,22 @@ def main():
     ids = encode_prompt(L.tokenizer, args.prompt, args.no_chat)
     decode = L.tokenizer.decode                  # uniform: decode(ids) -> str
 
+    # --mtp: self-speculative decoding via the family's MTP head (qwen3_5 only). The base
+    # weights were streamed in fam.load; the head's `mtp.*` tensors remain in L.weights.
+    gen = generate(model, ids, decode, stop_ids, device,
+                   max_new_tokens=args.max_new_tokens, **sampling)
+    if args.mtp:
+        if L.model_type != "qwen3_5":
+            sys.exit(f"--mtp not supported for model_type {L.model_type!r} (qwen3_5 only)")
+        from qwen3_5.mtp import load_mtp, generate_mtp
+        mtp = load_mtp(model, L.weights, L.fmt, device, pick_dtype(device))
+        print("[mtp: self-speculative decoding]", file=sys.stderr)
+        gen = generate_mtp(model, mtp, ids, decode, stop_ids, device,
+                           max_new_tokens=args.max_new_tokens, **sampling)
+
     print(f"\n>>> {args.prompt}\n", file=sys.stderr)
     n, t0 = 0, time.time()
-    for piece in generate(model, ids, decode, stop_ids, device,
-                          max_new_tokens=args.max_new_tokens, **sampling):
+    for piece in gen:
         print(piece, end="", flush=True)
         n += 1
     dt = time.time() - t0

@@ -30,6 +30,15 @@ class Qwen3_5Cache:
         self.layers = [None] * n_layers
         self.seen_tokens = 0
 
+    def clone(self) -> "Qwen3_5Cache":
+        """Deep copy for speculative decoding: snapshot before a draft, restore on reject.
+        Needed because linear layers' (conv, recurrent) state can't be sliced back a token
+        the way a KV cache can — the delta-rule recurrence isn't invertible."""
+        new = Qwen3_5Cache(len(self.layers))
+        new.seen_tokens = self.seen_tokens
+        new.layers = [None if s is None else tuple(t.clone() for t in s) for s in self.layers]
+        return new
+
 
 class DecoderLayer(nn.Module):
     """Pre-norm residual block. Every 4th layer is full-attention (GQA, gated, partial

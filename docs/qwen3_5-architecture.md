@@ -181,11 +181,23 @@ shared `lm_head`. To predict token *t+2*: norm the previous hidden state and the
 token embedding, concat → `fc` → one decoder layer → `mtp.norm` → `lm_head`.
 
 → Plan executed: base LM landed and parity-passed first; MTP added as the opt-in step-6
-module (`mtp.py`, top-level `mtp.*` weights, shared embeddings + lm_head). **Caveat:** no
-`transformers` class implements MTP (every variant lists `mtp.*` as ignored), so there is
-no reference to numerically parity-check it — the module matches the checkpoint's tensor
-layout and follows the documented Eagle forward, validated structurally (loads, runs,
-correct shapes) rather than by a logit comparison.
+module (`mtp.py`, top-level `mtp.*` weights, shared embeddings + lm_head). It is wired into
+inference behind `run.py --mtp` as self-speculative decoding: the head drafts token t+2,
+one batched main forward over `[pending, draft]` verifies it (accept → 2 tokens for ~1
+pass; reject → restore the pre-verify cache snapshot and re-run the one confirmed token).
+The cache snapshot is needed because the GDN `(conv, recurrent)` state is not invertible —
+unlike a KV cache, it can't be sliced back a token. Output equals greedy decoding exactly
+(a draft is accepted only when it matches the main model's own next token).
+
+**Caveat:** no `transformers` class implements MTP (every variant lists `mtp.*` as
+ignored), so there is no reference to numerically parity-check the head — it matches the
+checkpoint's tensor layout and follows the documented Eagle forward, validated structurally
+(loads, runs, right shapes). Two details a reference would pin down — the `fc` concat order
+`[emb ; hidden]` and the MTP block's position offset — follow the doc/Eagle convention; the
+verify loop makes the position offset moot (a bad draft is simply rejected). The MTP
+attention is assumed **gated** (q_proj ×2), consistent with the main full-attention block;
+if a real checkpoint's `mtp.layers.0.self_attn.q_proj` is un-gated, the loader fails loud
+on a shape mismatch.
 
 ## Tensor names (confirmed from `Qwen/Qwen3.5-4B` index)
 

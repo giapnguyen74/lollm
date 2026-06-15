@@ -234,7 +234,18 @@ def check_step4():
     inc = torch.stack(outs, dim=1)
     assert torch.allclose(full, inc, atol=1e-4), \
         f"prefill vs incremental decode mismatch (max {(full - inc).abs().max():.2e})"
-    print("step4: family cache + wired forward — prefill==incremental decode (hybrid stack) OK")
+
+    # two-token cached continuation (the --mtp verify path: GDN chunked WITH prior state)
+    # must equal feeding the same two tokens one at a time.
+    _, base = model(ids[:, :T])
+    nxt = torch.randint(0, cfg.vocab_size, (B, 2))
+    l_chunk, _ = model(nxt, base.clone())                    # [a,b] in one cached pass
+    s0, p = model(nxt[:, :1], base.clone())
+    s1, _ = model(nxt[:, 1:2], p)                            # a then b
+    l_step = torch.cat([s0, s1], dim=1)
+    assert torch.allclose(l_chunk, l_step, atol=1e-4), \
+        f"2-token cached chunk vs step mismatch (max {(l_chunk - l_step).abs().max():.2e})"
+    print("step4: family cache + wired forward — prefill==incremental, 2-token cached==stepwise OK")
 
 
 def check_step6():
