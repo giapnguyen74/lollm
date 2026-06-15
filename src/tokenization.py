@@ -28,6 +28,8 @@ except ImportError:
 
 class HFTokenizer:
     def __init__(self, path: str):
+        # intentionally lazy: keeps `transformers` off the GGUF path, since GGUFTokenizer /
+        # SPMTokenizer below are hand-written with no external deps.
         from transformers import AutoTokenizer
         self._wrap(AutoTokenizer.from_pretrained(path))
 

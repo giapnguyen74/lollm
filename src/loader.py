@@ -12,7 +12,24 @@ from __future__ import annotations
 import glob
 import json
 import os
+import sys
 from dataclasses import dataclass
+
+import numpy as np
+import torch
+from huggingface_hub import hf_hub_download, list_repo_files, snapshot_download
+from safetensors.torch import load_file
+
+from dequant import dequantize
+from gguf_reader import GGUFReader
+from progress import bar
+from tokenization import GGUFTokenizer, HFTokenizer, SPMTokenizer
+
+# what we pull for a safetensors repo
+_HF_PATTERNS = [
+    "config.json", "generation_config.json", "*.safetensors",
+    "*.safetensors.index.json", "tokenizer*", "*.model", "special_tokens_map.json",
+]
 
 
 @dataclass
@@ -32,7 +49,6 @@ def resolve(spec: str, token: str | None = None) -> str:
     token = token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 
     if ":" in spec:                                  # gguf 'repo:QUANT'
-        from huggingface_hub import hf_hub_download, list_repo_files
         repo, quant = spec.split(":", 1)
         files = [f for f in list_repo_files(repo, token=token) if f.lower().endswith(".gguf")]
         matches = sorted(f for f in files if quant.lower() in f.lower())
@@ -43,18 +59,32 @@ def resolve(spec: str, token: str | None = None) -> str:
         print(f"[downloading {repo} :: {chosen}]", flush=True)
         return hf_hub_download(repo, chosen, token=token)
 
-    from huggingface_hub import snapshot_download    # safetensors repo
-    return snapshot_download(spec, token=token, allow_patterns=[
-        "config.json", "generation_config.json", "*.safetensors",
-        "*.safetensors.index.json", "tokenizer*", "*.model", "special_tokens_map.json"])
+    # safetensors repo. Ask the hub — same command, `dry_run=True` — what (if anything) needs
+    # fetching, so a fully-cached model skips the download and we can size what's left.
+    kw = dict(token=token, allow_patterns=_HF_PATTERNS)
+
+    pending = None
+    try:
+        plan = snapshot_download(spec, dry_run=True, **kw)        # list[DryRunFileInfo], no download
+        pending = [f for f in plan if getattr(f, "will_download", True)]
+    except Exception:
+        pending = None                                           # old hub / offline → handle below
+
+    if pending == []:                                            # everything cached → no download
+        print(f"[{spec}: fully cached, skipping download]", file=sys.stderr, flush=True)
+        return snapshot_download(spec, local_files_only=True, **kw)
+    if pending is None:                                          # couldn't plan → try cache, else fetch
+        try:
+            return snapshot_download(spec, local_files_only=True, **kw)
+        except Exception:
+            pass
+    elif pending:                                                # some files to fetch — say how much
+        mb = sum((getattr(f, "file_size", 0) or 0) for f in pending) / 1e6
+        print(f"[{spec}: downloading {len(pending)} file(s) (~{mb:.0f} MB)]", file=sys.stderr, flush=True)
+    return snapshot_download(spec, **kw)
 
 
 def _load_hf(path: str) -> Loaded:
-    from safetensors.torch import load_file
-    from tokenization import HFTokenizer
-
-    from progress import bar
-
     raw_config = json.load(open(os.path.join(path, "config.json")))
     weights: dict = {}
     shards = sorted(glob.glob(os.path.join(path, "*.safetensors")))
@@ -82,12 +112,6 @@ def _load_hf(path: str) -> Loaded:
 
 
 def _load_gguf(path: str) -> Loaded:
-    import numpy as np
-    import torch
-    from gguf_reader import GGUFReader
-    from dequant import dequantize
-    from tokenization import GGUFTokenizer, SPMTokenizer
-
     reader = GGUFReader(path)
     meta = reader.metadata
 

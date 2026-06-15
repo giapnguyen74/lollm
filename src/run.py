@@ -101,6 +101,8 @@ def main():
     if args.mtp:
         if L.model_type != "qwen3_5":
             sys.exit(f"--mtp not supported for model_type {L.model_type!r} (qwen3_5 only)")
+        # intentionally lazy: only this optional feature pulls in a specific family's module,
+        # so the generic CLI doesn't import qwen3_5 for an ordinary (e.g. qwen2) run.
         from qwen3_5.mtp import load_mtp, generate_mtp
         mtp = load_mtp(model, L.weights, L.fmt, device, pick_dtype(device))
         print("[mtp: self-speculative decoding]", file=sys.stderr)

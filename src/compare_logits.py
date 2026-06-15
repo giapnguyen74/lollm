@@ -26,9 +26,11 @@ import json
 import os
 
 import torch
+import transformers
 
 import loader
 import router
+from tokenization import HFTokenizer
 
 
 class CompareError(Exception):
@@ -60,8 +62,6 @@ def _reference_class(path: str):
     checkpoint's own architecture is what lets a multimodal wrapper (e.g.
     Qwen3_5ForConditionalGeneration) load its `model.language_model.*` text weights.
     """
-    import transformers
-
     cfg = json.load(open(os.path.join(path, "config.json")))
     for arch in cfg.get("architectures", []) or []:
         cls = getattr(transformers, arch, None)
@@ -103,7 +103,6 @@ def compare(model_spec: str, prompt: str = "The capital of France is") -> dict:
     gc.collect()
 
     with _phase("compare"):
-        from tokenization import HFTokenizer
         decode = HFTokenizer(path).decode      # fresh tokenizer (we freed L above)
         ot, rt = int(ours.argmax()), int(r.argmax())
         cos = torch.nn.functional.cosine_similarity(ours, r, dim=0).item()

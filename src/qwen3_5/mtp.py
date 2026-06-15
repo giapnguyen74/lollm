@@ -30,9 +30,11 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from generate import sample_next
 from .config import Qwen3_5Config
 from .blocks import RMSNorm, RoPE
 from .modeling_qwen3_5 import DecoderLayer
+from .weights import to_raw, _set_param
 
 
 class MTP(nn.Module):
@@ -102,8 +104,6 @@ def generate_mtp(model, mtp: MTP, ids, decode, stop_ids, device, *, max_new_toke
     position offset is unverifiable but irrelevant to correctness here: a wrong draft is
     simply rejected, so it can only cost speed, never accuracy.
     """
-    from generate import sample_next
-
     eos = set(stop_ids)
     context = list(ids)
     generated, prev = [], ""
@@ -172,8 +172,6 @@ def _mtp_raw(canonical: str, fmt: str, to_raw):
 def load_mtp(model, weights: dict, fmt: str, device="cpu", dtype=None) -> MTP:
     """Build the MTP head and stream its `mtp.*` weights (same shape-checked load as the
     base family). Reuses the already-loaded `embed_tokens` / `lm_head` on `model`."""
-    from .weights import to_raw, _set_param
-
     cfg = model.cfg
     with torch.device("meta"):
         mtp = MTP(cfg)
