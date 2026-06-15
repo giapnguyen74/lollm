@@ -17,6 +17,7 @@ import torch
 import loader
 import router
 from generate import generate
+from progress import bar
 
 
 def pick_device(req):
@@ -78,8 +79,10 @@ def main():
 
     L = loader.load(args.model)               # raw config + weights + tokenizer
     fam = router.route(L.model_type)          # probe + route (fail loud if unknown)
-    # streams weights onto `device` and frees each CPU source as it goes (peak ≈ one copy)
-    model = fam.load(L.raw_config, L.weights, L.fmt, device, pick_dtype(device))
+    # streams weights onto `device` and frees each CPU source as it goes (peak ≈ one copy).
+    # The CLI supplies the display; the family loader only emits `progress(done, total)`.
+    model = fam.load(L.raw_config, L.weights, L.fmt, device, pick_dtype(device),
+                     progress=bar(f"streaming → {device}"))
     print(f"[{L.fmt} | {L.model_type} | loaded in {time.time()-t0:.1f}s]", file=sys.stderr)
 
     sampling = resolve_sampling(

@@ -37,7 +37,8 @@ def to_raw(canonical: str, fmt: str):
         "qwen3_5: only hf (safetensors) supported; GGUF not implemented")
 
 
-def load(raw_config: dict, weights: dict, fmt: str, device="cpu", dtype=None) -> Qwen3_5Model:
+def load(raw_config: dict, weights: dict, fmt: str, device="cpu", dtype=None,
+         progress=None) -> Qwen3_5Model:
     cfg = build_config(raw_config, fmt)
     # Build on meta → no memory allocated for params yet.
     with torch.device("meta"):
@@ -45,7 +46,11 @@ def load(raw_config: dict, weights: dict, fmt: str, device="cpu", dtype=None) ->
 
     tied = to_raw("lm_head.weight", fmt) not in weights
     # STREAM: move each weight to the device and free the CPU source (pop) as we go.
-    for name, mp in list(model.named_parameters()):
+    # `progress(done, total)` is an optional caller-supplied signal — no UI code here.
+    params = list(model.named_parameters())
+    for i, (name, mp) in enumerate(params):
+        if progress is not None:
+            progress(i, len(params))
         if name == "lm_head.weight" and tied:
             continue
         raw = to_raw(name, fmt)
@@ -58,6 +63,8 @@ def load(raw_config: dict, weights: dict, fmt: str, device="cpu", dtype=None) ->
         if dtype is not None:
             t = t.to(dtype)
         _set_param(model, name, t.to(device))
+    if progress is not None:
+        progress(len(params), len(params))     # final tick → closes the bar
     if tied:                                   # share the embedding on the device
         model.lm_head.weight = model.model.embed_tokens.weight
     return model.eval()

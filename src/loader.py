@@ -53,10 +53,15 @@ def _load_hf(path: str) -> Loaded:
     from safetensors.torch import load_file
     from tokenization import HFTokenizer
 
+    from progress import bar
+
     raw_config = json.load(open(os.path.join(path, "config.json")))
     weights: dict = {}
-    for shard in sorted(glob.glob(os.path.join(path, "*.safetensors"))):
+    shards = sorted(glob.glob(os.path.join(path, "*.safetensors")))
+    report = bar("reading shards")
+    for i, shard in enumerate(shards):
         weights.update(load_file(shard))
+        report(i + 1, len(shards))
 
     tok = HFTokenizer(path)
     stop_ids, sampling = list(tok.eos_ids), {}

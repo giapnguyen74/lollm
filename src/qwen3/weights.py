@@ -54,13 +54,18 @@ def to_raw(canonical: str, fmt: str):
     return None
 
 
-def load(raw_config: dict, weights: dict, fmt: str, device="cpu", dtype=None) -> Qwen3Model:
+def load(raw_config: dict, weights: dict, fmt: str, device="cpu", dtype=None,
+         progress=None) -> Qwen3Model:
     cfg = build_config(raw_config, fmt)
     with torch.device("meta"):
         model = Qwen3Model(cfg)
 
     tied = to_raw("lm_head.weight", fmt) not in weights
-    for name, mp in list(model.named_parameters()):
+    # `progress(done, total)` is an optional caller signal — no UI code here.
+    params = list(model.named_parameters())
+    for i, (name, mp) in enumerate(params):
+        if progress is not None:
+            progress(i, len(params))
         if name == "lm_head.weight" and tied:
             continue
         raw = to_raw(name, fmt)
@@ -72,6 +77,8 @@ def load(raw_config: dict, weights: dict, fmt: str, device="cpu", dtype=None) ->
         if dtype is not None:
             t = t.to(dtype)
         _set_param(model, name, t.to(device))
+    if progress is not None:
+        progress(len(params), len(params))         # final tick → closes the bar
     if tied:
         model.lm_head.weight = model.model.embed_tokens.weight
     return model.eval()
