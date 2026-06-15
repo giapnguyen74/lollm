@@ -2,16 +2,16 @@
 qwen3_5_moe/weights.py — the weight-name seam + streaming load (checkpoint → model).
 
 Our module names mirror HF, so the safetensors map is identity. The MoE experts are stored
-per-expert (`...mlp.experts.{e}.{gate,up,down}_proj.weight`), the router as `...mlp.gate.weight`,
-and the shared expert as `...mlp.shared_expert.*` / `...mlp.shared_expert_gate.weight` — all of
-which our modules reproduce by name, so no special MoE mapping is needed here. Build on `meta`,
+FUSED — `...mlp.experts.gate_up_proj` (num_experts, 2·moe_inter, hidden) and
+`...mlp.experts.down_proj` (num_experts, hidden, moe_inter) — and `FusedExperts` holds them as
+those exact stacked Parameters, so no un-stacking is needed: the names and shapes line up
+1:1. The router (`...mlp.gate.weight`), shared expert (`...mlp.shared_expert.*`) and its gate
+(`...mlp.shared_expert_gate.weight`) are per-tensor and also map by name. Build on `meta`,
 stream each weight onto the device (freeing the CPU source as we go), assert shapes, and re-tie
 embeddings when `lm_head` is absent. No GGUF path — Gated DeltaNet + MoE GGUF isn't standardized.
 
-NOTE: if a converter ships *fused/stacked* experts (a single `mlp.experts.gate_proj` of shape
-(num_experts, inter, hidden) instead of per-expert tensors), this is the seam to un-stack —
-slice tensor `e` for each `experts.{e}.*`. The strict `load_state_dict`-style shape check below
-fails loud on any mismatch, which is how you'd discover a stacked checkpoint.
+The strict shape check below is what verifies the fused layout: a mismatch (e.g. a checkpoint
+that stores experts transposed, or per-expert) fails loud here rather than silently mis-loading.
 """
 
 from __future__ import annotations

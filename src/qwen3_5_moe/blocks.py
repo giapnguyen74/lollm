@@ -348,9 +348,32 @@ class MLP(nn.Module):
         return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
 
 
+class FusedExperts(nn.Module):
+    """
+    The routed experts, kept FUSED exactly as the checkpoint stores them (Qwen3-Next /
+    Qwen3.5-MoE layout): two stacked Parameters instead of `num_experts` separate `Linear`
+    modules, so the weight-name map stays identity (`mlp.experts.gate_up_proj`,
+    `mlp.experts.down_proj`). Each expert slice is in standard `(out, in)` Linear orientation,
+    so `F.linear` applies it with no transpose:
+      gate_up_proj  (E, 2·moe_inter, hidden)   — gate & up projections fused on the out axis
+      down_proj     (E, hidden, moe_inter)
+    """
+
+    def __init__(self, cfg: Qwen3_5MoeConfig):
+        super().__init__()
+        E, inter, h = cfg.num_experts, cfg.moe_intermediate_size, cfg.hidden_size
+        self.gate_up_proj = nn.Parameter(torch.empty(E, 2 * inter, h))
+        self.down_proj = nn.Parameter(torch.empty(E, h, inter))
+
+    def expert(self, x_tok, e):
+        """SwiGLU for one expert `e` over the tokens routed to it. `x_tok`: (n, hidden)."""
+        gate, up = F.linear(x_tok, self.gate_up_proj[e]).chunk(2, dim=-1)   # (n, 2·inter)→2×(n,inter)
+        return F.linear(F.silu(gate) * up, self.down_proj[e])               # (n, hidden)
+
+
 class SparseMoeBlock(nn.Module):
     """
-    Mixture-of-Experts FFN (Qwen3-Next / Qwen2-MoE layout) — drop-in for the dense `MLP`:
+    Mixture-of-Experts FFN (Qwen3-Next / Qwen3.5-MoE layout) — drop-in for the dense `MLP`:
     same `block(x) -> x` signature, so the decoder layer never branches on it.
 
     Per token:
@@ -359,9 +382,9 @@ class SparseMoeBlock(nn.Module):
       3. EXPERTS: y = Σ_k  p_k · expert_k(x)                          # routed SwiGLU experts
       4. SHARED:  y += sigmoid(shared_expert_gate(x)) · shared_expert(x)   # always-on expert
 
-    Experts are kept as separate `MLP` modules (HF safetensors store them per-expert), so the
-    weight-name map stays identity. The expert loop is masked/grouped — only tokens routed to
-    an expert pay for it — which is the readable form of the sparse dispatch (CONVENTIONS §3).
+    Routed experts are FUSED (`FusedExperts`) to mirror the checkpoint's parameter layout; the
+    shared expert is a plain per-tensor `MLP`. The expert loop is masked — only tokens routed
+    to an expert pay for it — the readable form of the sparse dispatch (CONVENTIONS §3).
     """
 
     def __init__(self, cfg: Qwen3_5MoeConfig):
@@ -370,8 +393,7 @@ class SparseMoeBlock(nn.Module):
         self.top_k = cfg.num_experts_per_tok
         self.norm_topk_prob = cfg.norm_topk_prob
         self.gate = nn.Linear(cfg.hidden_size, cfg.num_experts, bias=False)   # router
-        self.experts = nn.ModuleList(
-            MLP(cfg, intermediate=cfg.moe_intermediate_size) for _ in range(cfg.num_experts))
+        self.experts = FusedExperts(cfg)
         # shared expert (Qwen3-Next): an always-on FFN with its own scalar sigmoid gate
         self.has_shared = cfg.shared_expert_intermediate_size > 0
         if self.has_shared:
@@ -395,7 +417,7 @@ class SparseMoeBlock(nn.Module):
         hit = mask.sum(dim=(1, 2)).nonzero().flatten().tolist()   # experts with ≥1 token
         for e in hit:
             slot, tok = torch.where(mask[e])                   # slots/tokens routed to expert e
-            out_e = self.experts[e](x[tok]) * weights[tok, slot, None]
+            out_e = self.experts.expert(x[tok], e) * weights[tok, slot, None]
             y.index_add_(0, tok, out_e.to(y.dtype))
         # 4. SHARED EXPERT — always-on, scaled by its own sigmoid gate.
         if self.has_shared:
