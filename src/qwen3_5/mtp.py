@@ -67,7 +67,7 @@ class MTP(nn.Module):
         x = self.fc(torch.cat(
             [self.pre_fc_norm_embedding(next_emb), self.pre_fc_norm_hidden(hidden)], dim=-1))
         for layer in self.layers:
-            x, _ = layer(x, cos, sin, None, use_cache=False)
+            x = layer(x, cos, sin, None, use_cache=False)   # cache=None → one-shot, no KV store
         return self.norm(x)
 
 

@@ -203,7 +203,7 @@ class GatedAttention(nn.Module):
         self.k_norm = RMSNorm(hd, cfg.rms_norm_eps)
         self.gate_act = F.silu if cfg.output_gate_type in ("swish", "silu") else torch.sigmoid
 
-    def forward(self, x, cos, sin, past_kv):
+    def forward(self, x, cos, sin, cache=None, layer_idx=0):
         b, t, _ = x.shape
         # 1. PROJECT q (+gate), k, v. q_proj packs query and gate per head (2·head_dim).
         qg = self.q_proj(x).view(b, t, self.n_head, self.head_dim * 2)
@@ -215,11 +215,11 @@ class GatedAttention(nn.Module):
         v = self.v_proj(x).view(b, t, self.n_kv, self.head_dim).transpose(1, 2)
         # 3. PARTIAL ROPE on q,k.
         q, k = RoPE.apply(q, k, cos, sin)
-        # 4. KV CACHE.
-        if past_kv is not None:
-            k = torch.cat([past_kv[0], k], dim=2)
-            v = torch.cat([past_kv[1], v], dim=2)
-        new_kv = (k, v)
+        # 4. KV CACHE — the cache owns storage: append this step's (k,v) post-RoPE /
+        #    pre-GQA-expansion, and read back the full K,V to attend over. No cache (e.g. the
+        #    MTP block's one-shot pass) → attend over just this step's k,v.
+        if cache is not None:
+            k, v = cache.append_kv(layer_idx, k, v)
         # 5. GQA EXPAND.
         k, v = _repeat_kv(k, self.n_rep), _repeat_kv(v, self.n_rep)
         # 6. ATTENTION — causal (scale = head_dim**-0.5 = SDPA default).
@@ -234,7 +234,7 @@ class GatedAttention(nn.Module):
         # 7. MERGE heads, OUTPUT GATE, project.
         o = o.transpose(1, 2).reshape(b, t, self.n_head * self.head_dim)
         o = o * self.gate_act(gate)
-        return self.o_proj(o), new_kv
+        return self.o_proj(o)
 
 
 class GatedDeltaNet(nn.Module):

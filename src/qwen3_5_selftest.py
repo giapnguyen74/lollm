@@ -147,17 +147,18 @@ def check_step2():
     assert torch.allclose(o_q, r_q, atol=1e-6) and torch.allclose(o_k, r_k, atol=1e-6), "RoPE mismatch"
     assert torch.allclose(o_q[..., rd:], q[..., rd:]), "pass-through dims must be unrotated"
 
-    # one full-attention layer: prefill then cached decode
+    # one full-attention layer: prefill then cached decode, KV via the cache methods
     layer = DecoderLayer(cfg, 3).eval()       # idx 3 → full_attention
+    cache = Qwen3_5Cache(cfg.num_hidden_layers)
     x = torch.randn(B, T, cfg.hidden_size)
-    y, kv = layer(x, cos, sin, None, use_cache=True)
+    y = layer(x, cos, sin, cache, 3, use_cache=True)
     assert y.shape == x.shape
-    assert kv[0].shape == (B, cfg.num_key_value_heads, T, hd)
+    assert cache.read_kv(3)[0].shape == (B, cfg.num_key_value_heads, T, hd)
     x1 = torch.randn(B, 1, cfg.hidden_size)
     c1, s1 = rope.cos_sin(torch.arange(T, T + 1), torch.float32)
-    y1, kv1 = layer(x1, c1, s1, kv, use_cache=True)
+    y1 = layer(x1, c1, s1, cache, 3, use_cache=True)
     assert y1.shape == x1.shape
-    assert kv1[0].shape == (B, cfg.num_key_value_heads, T + 1, hd)
+    assert cache.read_kv(3)[0].shape == (B, cfg.num_key_value_heads, T + 1, hd)
     print("step2: partial-RoPE parity + gated-attention forward (prefill+decode) OK")
 
 
@@ -213,15 +214,16 @@ def check_step4():
     full, cache = model(ids)
     assert full.shape == (B, T, cfg.vocab_size), full.shape
     assert isinstance(cache, Qwen3_5Cache) and cache.seen_tokens == T
-    # cache holds the right state type per layer (KV tuple vs (conv, recurrent) pair)
+    # cache holds the right state type per layer (KV via the policy vs fixed linear slot)
     for i, layer in enumerate(model.model.layers):
-        st = cache.layers[i]
         if layer.layer_type == "full_attention":
-            assert st[0].shape == (B, cfg.num_key_value_heads, T, cfg.head_dim), (i, st[0].shape)
+            K, _ = cache.read_kv(i)
+            assert K.shape == (B, cfg.num_key_value_heads, T, cfg.head_dim), (i, K.shape)
         else:
-            assert st[0].shape == (B, cfg.conv_dim, cfg.linear_conv_kernel_dim - 1), (i, st[0].shape)
-            assert st[1].shape == (B, cfg.linear_num_value_heads,
-                                   cfg.linear_key_head_dim, cfg.linear_value_head_dim), (i, st[1].shape)
+            conv, rec = cache.linear_state(i)
+            assert conv.shape == (B, cfg.conv_dim, cfg.linear_conv_kernel_dim - 1), (i, conv.shape)
+            assert rec.shape == (B, cfg.linear_num_value_heads,
+                                 cfg.linear_key_head_dim, cfg.linear_value_head_dim), (i, rec.shape)
 
     # incremental decode (token-by-token, threading the cache) must match full prefill —
     # exercises BOTH mixers' caches through the whole hybrid stack + the position counter
