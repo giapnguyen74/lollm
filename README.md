@@ -2,8 +2,10 @@
 
 A small, readable inference engine for **studying how LLMs (and related models) run
 inference**. A thin **loader + router**, a shared **generate loop**, and
-self-contained **family packages** — currently **qwen2 · qwen3 · gemma2**, from HF
-safetensors **and** GGUF. PyTorch is the only dependency for the actual model math.
+self-contained **family packages** — currently **qwen2 · qwen3 · gemma2 · qwen3_5**
+(the last covering **Qwen3.5 / Qwen3.6**: a hybrid Gated-DeltaNet + gated-attention
+decoder, with an optional MTP speculative head), from HF safetensors **and** GGUF
+(qwen3_5 is safetensors-only). PyTorch is the only dependency for the actual model math.
 
 ## Vision
 
@@ -57,9 +59,26 @@ commands below work the same; the scripts are just shortcuts.
 
 ### Hardware / backend
 
-> ⚠️ **Currently validated only on Apple Silicon (Mac M-series, MPS).** The code is
-> written against the generic `torch`/`nn` API and *should* run on CUDA and CPU, but
-> those paths haven't been verified end-to-end yet. Treat them as untested.
+> ✅ **Validated on Apple Silicon (Mac M-series, MPS) and NVIDIA (CUDA).** Parity also
+> runs on **CPU** (the `compare_logits` gate is fp32 on CPU). **ROCm** is written
+> against the generic `torch`/`nn` API and *should* work (it presents as `cuda`) but
+> isn't verified yet.
+
+#### Tested models
+
+End-to-end (load → generate → `compare_logits` parity vs `transformers`) on both Mac
+(MPS) and CUDA:
+
+| family | model | notes |
+|---|---|---|
+| `qwen2`   | `Qwen/Qwen2.5-0.5B-Instruct` | dense |
+| `qwen3`   | `Qwen/Qwen3-0.6B`            | QK-norm, no bias |
+| `gemma2`  | `google/gemma-2-2b-it`      | sandwich norm, sliding window, soft-caps (gated repo) |
+| `qwen3_5` | `Qwen/Qwen3.5-4B`           | hybrid GDN + gated attention; parity cosine ≈ 1 |
+| `qwen3_5` | `Qwen/Qwen3.6-27B`          | same family (untied `lm_head`, larger); runs on CUDA |
+
+`sanity_test.py` runs the parity gate across the small models in one shot:
+`python src/sanity_test.py` (or `--only qwen3_5`).
 
 The PyTorch **version** (`torch>=2.2`) and the **backend** (CPU / CUDA / ROCm / MPS)
 are separate: the version is pinned here, but the backend is chosen at *install time*
@@ -110,11 +129,18 @@ engine adapts automatically.
 python src/run.py --model Qwen/Qwen2.5-0.5B-Instruct --prompt "Explain RoPE in one line."
 python src/run.py --model ./local/qwen2/dir --prompt "Hi" --temperature 0   # greedy
 
+# Qwen3.5 / Qwen3.6 (hybrid GDN family)
+python src/run.py --model Qwen/Qwen3.5-4B  --prompt "What is coffee"          # direct answer
+python src/run.py --model Qwen/Qwen3.5-4B  --prompt "What is coffee" --think  # show <think>…</think>
+python src/run.py --model Qwen/Qwen3.5-4B  --prompt "What is coffee" --mtp    # self-speculative (MTP)
+
 # GGUF (local .gguf or repo:QUANT — downloaded + dequantized)
 python src/run.py --model Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M --prompt "Hi"
 python src/run.py --model ./qwen2.5-0.5b-instruct-q4_k_m.gguf   --prompt "Hi"
 
-python src/compare_logits.py --model Qwen/Qwen2.5-0.5B-Instruct             # parity gate (safetensors)
+# parity gate — one model, or all families at once
+python src/compare_logits.py --model Qwen/Qwen2.5-0.5B-Instruct
+python src/sanity_test.py                                                     # qwen2/qwen3/qwen3_5/gemma2
 ```
 
 ## Design at a glance
@@ -131,16 +157,23 @@ src/
 ├── gguf_reader.py    # SHARED: parse GGUF (metadata + tensor table + raw bytes)
 ├── dequant.py        # SHARED: dequantize GGUF blocks (Q4_K, Q6_K, Q5_0, …)
 ├── tokenization.py   # SHARED: uniform tokenizer — HFTokenizer + GGUFTokenizer (embedded BPE)
+├── progress.py       # SHARED: load-phase progress bar (caller-driven; model code stays UI-free)
 ├── models.py         # registry: Family record + register/get; imports each family (e.g. `import qwen2`)
-├── run.py            # CLI: loader → router → model.load → generate
-├── compare_logits.py # parity gate vs transformers
+├── run.py            # CLI: loader → router → model.load → generate (+ --think, --mtp)
+├── compare_logits.py # parity gate vs transformers (reusable compare())
+├── sanity_test.py    # run the parity gate across all families in one go
 └── qwen2/                       # one self-contained family package
     ├── __init__.py              # manifest: MODEL_TYPES · DEFAULTS · register(load)
     ├── config.py                # Qwen2Config — parse config.json (hf) / metadata (gguf)
     ├── blocks.py                # small components: RMSNorm · RoPE · attention · MLP
     ├── modeling_qwen2.py        # architecture: DecoderLayer + Qwen2Model + forward
+    ├── kv.py                    # the family KV cache (methods, not inline) — swappable later
     └── weights.py               # the weight-name seam (maps) + load (checkpoint → model)
 ```
+
+The `qwen3_5/` package adds `blocks.py` (Gated DeltaNet + gated attention), `mtp.py`
+(the optional speculative head), and a hybrid `kv.py` (growing KV for full layers +
+fixed `(conv, recurrent)` slots for linear layers).
 
 A family package imports only its own siblings (`config`, `blocks`) + the shared
 registry — never another family. Adding a model = drop a `<family>/` package + add
@@ -179,9 +212,15 @@ spec ─► loader (raw config + weights by file names + tokenizer)
 Gemma2-specific metadata keys (attn scale, soft-caps, sliding window) aren't yet
 validated against llama.cpp, so per the vision we raise rather than guess (see
 `gemma2/config.py::from_gguf`).
+✅ **qwen3_5** (Qwen3.5-4B / Qwen3.6-27B) — hybrid **3 Gated-DeltaNet : 1 gated-attention**
+decoder, partial RoPE (mRoPE→text), four-projection GDN with chunked+recurrent delta-rule
+and a fixed-size `(conv, recurrent)` cache; safetensors-only (GDN GGUF isn't standardized).
+Optional **MTP** speculative head (`run.py --mtp`) and **thinking** toggle (`--think`).
 Shared loader/router/streaming-loop · GGUF parse + dequant (Q4_K/Q5_K/Q6_K/Q5_0/…) ·
-uniform tokenizer (BPE + SentencePiece) · streaming weight load (peak ≈ steady) · parity gate.
-⬜ next families (`llama/`, `gemma3/`, `mixtral/`, qwen3-MoE). ⬜ GGUF MoE (stacked experts).
+uniform tokenizer (BPE + SentencePiece) · streaming weight load (peak ≈ steady) with a
+load progress bar · cache-aware download skip (`dry_run`) · per-family `kv.py` cache · parity gate.
+⬜ next families (`llama/`, `gemma3/`, `qwen3_5_moe` — same hybrid backbone + sparse MoE MLP).
+⬜ GGUF MoE (stacked experts).
 
 > **gemma2 parity:** Gemma2 uses attention logit soft-capping, which standard SDPA
 > skips. To compare, load the reference with eager attention:
@@ -189,7 +228,10 @@ uniform tokenizer (BPE + SentencePiece) · streaming weight load (peak ≈ stead
 
 ## Verified
 
-Syntax across all modules; registry/router dispatch (qwen2 registers, unknown
-raises); `weights.to_raw` maps (hf identity + gguf); sampling precedence. **Not** yet
-run end-to-end — that's `compare_logits.py` on a real model in your venv (the real
-gate).
+Run **end-to-end** (load → generate → `compare_logits` parity vs `transformers`) on
+the [tested models](#tested-models) above, on **Mac (MPS)** and **CUDA** — e.g.
+Qwen3.5-4B matches the reference at cosine ≈ 1 (same top token), and Qwen3.6-27B runs
+on CUDA. Plus: registry/router dispatch (unknown `model_type` raises), `weights.to_raw`
+maps, sampling precedence, and the qwen3_5 self-tests (`src/qwen3_5_selftest.py`:
+conv causality, recurrent==chunked delta-rule, prefill==incremental decode, MTP shapes).
+`compare_logits.py` / `sanity_test.py` remain the gate to re-run for any new model.
