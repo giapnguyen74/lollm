@@ -47,47 +47,60 @@ def _reference_class(path: str):
     return transformers.AutoModelForCausalLM, "AutoModelForCausalLM"
 
 
+def compare(model_spec: str, prompt: str = "The capital of France is") -> dict:
+    """Run our family + the transformers reference on `prompt`; return a result dict.
+
+    Loads one model at a time (ours, freed, then the reference) so peak memory stays near a
+    single model. PASS = same argmax token and cosine > 0.9999.
+    """
+    path = loader.resolve(model_spec)
+
+    # ── ours (fp32 on CPU) ──
+    L = loader.load(model_spec)
+    model = router.route(L.model_type).load(L.raw_config, L.weights, L.fmt, "cpu", torch.float32)
+    ids = L.tokenizer.encode(prompt)
+    ours, _ = model(torch.tensor([ids]))
+    ours = ours[0, -1].float().clone()
+    del model, L                     # free before the reference loads
+    gc.collect()
+
+    # ── reference (same prompt, text branch for multimodal checkpoints) ──
+    ref_cls, ref_name = _reference_class(path)
+    ref = ref_cls.from_pretrained(path, dtype=torch.float32).eval()
+    with torch.no_grad():
+        r = ref(torch.tensor([ids])).logits[0, -1].float()
+    del ref                          # free the reference before returning
+    gc.collect()
+
+    from tokenization import HFTokenizer
+    decode = HFTokenizer(path).decode      # fresh tokenizer (we freed L above)
+    ot, rt = int(ours.argmax()), int(r.argmax())
+    # Gate on the *meaningful* signals: same prediction + near-identical direction. Raw
+    # max|Δ| is noisy across kernels (fp32 summation order) — reported, not gated.
+    return {
+        "model": model_spec, "reference": ref_name,
+        "our_top": ot, "our_text": decode([ot]),
+        "ref_top": rt, "ref_text": decode([rt]),
+        "max_abs": (ours - r).abs().max().item(),
+        "cosine": torch.nn.functional.cosine_similarity(ours, r, dim=0).item(),
+        "top5_match": ours.topk(5).indices.tolist() == r.topk(5).indices.tolist(),
+        "ok": ot == rt and torch.nn.functional.cosine_similarity(ours, r, dim=0).item() > 0.9999,
+    }
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", required=True)
     p.add_argument("--prompt", default="The capital of France is")
     args = p.parse_args()
 
-    path = loader.resolve(args.model)
-
-    # ── ours (fp32 on CPU) ──
-    L = loader.load(args.model)
-    model = router.route(L.model_type).load(L.raw_config, L.weights, L.fmt, "cpu", torch.float32)
-    ids = L.tokenizer.encode(args.prompt)
-    ours, _ = model(torch.tensor([ids]))
-    ours = ours[0, -1].float().clone()
-    del model, L                     # free ~16 GB before the reference loads
-    gc.collect()
-
-    # ── reference (same prompt, text branch for multimodal checkpoints) ──
-    ref_cls, ref_name = _reference_class(path)
-    print(f"[reference: {ref_name}]", flush=True)
-    ref = ref_cls.from_pretrained(path, dtype=torch.float32).eval()
-    with torch.no_grad():
-        r = ref(torch.tensor([ids])).logits[0, -1].float()
-
-    ot, rt = int(ours.argmax()), int(r.argmax())
-    max_abs = (ours - r).abs().max().item()
-    cos = torch.nn.functional.cosine_similarity(ours, r, dim=0).item()
-    top5_match = ours.topk(5).indices.tolist() == r.topk(5).indices.tolist()
-
-    from tokenization import HFTokenizer
-    decode = HFTokenizer(path).decode      # fresh tokenizer (we freed L above)
-    print(f"our top : {ot} -> {decode([ot])!r}")
-    print(f"ref top : {rt} -> {decode([rt])!r}")
-    print(f"max |Δ| : {max_abs:.4f} | cosine : {cos:.6f} | top-5 match: {top5_match}")
-
-    # Pass on the *meaningful* signals: same prediction + near-identical direction.
-    # Raw max|Δ| on logits is noisy across kernels (fp32 summation order), so it's
-    # reported for info, not gated. A real bug (wrong RoPE/norm) would drop cosine
-    # and change argmax.
-    ok = ot == rt and cos > 0.9999
-    print("RESULT:", "PASS ✅" if ok else "CHECK ❌")
+    res = compare(args.model, args.prompt)
+    print(f"[reference: {res['reference']}]")
+    print(f"our top : {res['our_top']} -> {res['our_text']!r}")
+    print(f"ref top : {res['ref_top']} -> {res['ref_text']!r}")
+    print(f"max |Δ| : {res['max_abs']:.4f} | cosine : {res['cosine']:.6f} | "
+          f"top-5 match: {res['top5_match']}")
+    print("RESULT:", "PASS ✅" if res["ok"] else "CHECK ❌")
 
 
 if __name__ == "__main__":
