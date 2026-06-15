@@ -265,11 +265,12 @@ with our numbered-step narration.
 
 Confirmed (no longer open):
 
-1. **Full attention** → output gate is `torch.sigmoid(gate)` (verified in the in-tree
-   `transformers/models/qwen3_5` reference, `Qwen3_5Attention.forward`). The 27B
-   `output_gate_type: "swish"` field is **not consulted** there; we keep it config-driven
-   but **default to sigmoid** (correct for the 4B parity target). Revisit only if a 27B
-   parity run shows a gate mismatch.
+1. **Full attention** → output gate is `torch.sigmoid(gate)`, **for both 4B and 27B**.
+   Resolved against the real `Qwen/Qwen3.6-27B` config + transformers 4.57.1: the reference
+   `Qwen3_5Attention.forward` hardcodes `sigmoid` and `output_gate_type` appears **nowhere**
+   in the modeling or config code — the 27B's `"swish"` value is silently ignored. So we
+   hardcode sigmoid too (an earlier config-driven `silu`-for-`swish` would have *diverged*
+   from the reference on 27B). `output_gate_type` is still parsed but unused.
 2. **GDN projections** = four linears (`in_proj_qkv/z/b/a`) — implemented; matches the
    reference `Qwen3_5GatedDeltaNet` line-for-line (split `[key,key,value]`, `beta=σ(b)`,
    `g=-exp(A_log)·softplus(a+dt_bias)`, l2-normed q/k, gated output norm).
@@ -280,9 +281,16 @@ Confirmed (no longer open):
    returns the plain `freqs[0]`: standard partial RoPE, `inv_freq = 1/θ^(arange(0,d,2)/d)`,
    `attention_scaling = 1.0`. Our `RoPE` matches exactly.
 
-Still to confirm when those steps arrive:
-
-- **27B** `lm_head.weight` placement (top-level vs nested) — only matters for the untied 27B.
+6. **Qwen3.6-27B is the same family** — verified against the real config. `model_type:
+   "qwen3_5"`, `Qwen3_5ForConditionalGeneration`, same hybrid schedule (64 layers → 16 full
+   / 48 linear, `full_attention_interval: 4`), same GDN dims / partial-RoPE / MTP. Only
+   differences are sizes, `tie_word_embeddings: false` (untied), and `output_gate_type:
+   "swish"` (ignored, see #1). No new architecture, no MoE — our config-driven code handles
+   it (e.g. `v_per_k = 48/16 = 3` vs the 4B's 2, applied generically).
+7. **27B `lm_head.weight`** = **top-level** (untied). The reference ties it as
+   `lm_head.weight → model.language_model.embed_tokens.weight`, i.e. `lm_head` is a sibling
+   of `model`. Our `to_raw` already leaves `lm_head.weight` top-level, and `weights.load`
+   detects the untied case by its presence in the checkpoint — so 27B loads without changes.
 
 ## Build order (once this doc is approved)
 

@@ -91,7 +91,8 @@ class Qwen3_5Config:
             layer_types=t["layer_types"],
             full_attention_interval=t.get("full_attention_interval", 4),
             attn_output_gate=t.get("attn_output_gate", True),
-            output_gate_type=t.get("output_gate_type", "sigmoid"),   # see "Deltas to confirm"
+            output_gate_type=t.get("output_gate_type", "sigmoid"),   # parsed but unused: the
+            #   reference hardcodes sigmoid and ignores this field (27B sets it "swish")
             linear_num_key_heads=t["linear_num_key_heads"],
             linear_num_value_heads=t["linear_num_value_heads"],
             linear_key_head_dim=t["linear_key_head_dim"],

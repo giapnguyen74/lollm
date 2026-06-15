@@ -183,10 +183,12 @@ class RoPE:
 
 class GatedAttention(nn.Module):
     """
-    Full-attention layer (Qwen3.5): GQA with QK-norm, partial RoPE, and an output gate.
-    `q_proj` emits query AND gate (hence ×2); after attention `o = o * gate_act(gate)`.
-    No biases. The reference (`Qwen3_5Attention(Qwen3NextAttention)`) uses sigmoid; we
-    keep it config-driven (`output_gate_type`) but default to sigmoid for 4B parity.
+    Full-attention layer (Qwen3.5 / Qwen3.6): GQA with QK-norm, partial RoPE, and an output
+    gate. `q_proj` emits query AND gate (hence ×2); after attention `o = o * sigmoid(gate)`.
+    No biases. The reference `Qwen3_5Attention` hardcodes `sigmoid` and does NOT consult
+    `output_gate_type` — the 27B config sets it to "swish", but transformers ignores that
+    field — so we match the reference and use sigmoid for both 4B and 27B (verified against
+    transformers 4.57.1).
     """
 
     def __init__(self, cfg: Qwen3_5Config):
@@ -201,7 +203,8 @@ class GatedAttention(nn.Module):
         self.o_proj = nn.Linear(self.n_head * hd, h, bias=False)
         self.q_norm = RMSNorm(hd, cfg.rms_norm_eps)                    # QK-norm (per head_dim)
         self.k_norm = RMSNorm(hd, cfg.rms_norm_eps)
-        self.gate_act = F.silu if cfg.output_gate_type in ("swish", "silu") else torch.sigmoid
+        # reference hardcodes sigmoid and ignores cfg.output_gate_type (see class docstring)
+        self.gate_act = torch.sigmoid
 
     def forward(self, x, cos, sin, cache=None, layer_idx=0):
         b, t, _ = x.shape
