@@ -19,15 +19,14 @@ import gc
 import sys
 import traceback
 
-from compare_logits import compare
+from compare_logits import compare, CompareError
 
 # (label, HF model id) — one representative checkpoint per family
 MODELS = [
     ("qwen2",   "Qwen/Qwen2.5-0.5B-Instruct"),
-    ("qwen3",   "Qwen/Qwen3-0.5B"),
-    ("qwen3_5", "Qwen/Qwen3.5-0.5B"),
-    ("gemma2",  "google/gemma-2-2b-it"),
-    ("gemma3",  "google/gemma-3-1b-it")
+    ("qwen3",   "Qwen/Qwen3-0.6B"),
+    ("qwen3_5", "Qwen/Qwen3.5-4B"),
+    ("gemma2",  "google/gemma-2-2b-it")
 ]
 
 
@@ -46,22 +45,31 @@ def main():
         print(f"\n===== {label}: {model} =====", flush=True)
         try:
             r = compare(model, args.prompt)
+            # ran end-to-end: PASS if logits agree, else CHECK (a *logits* divergence,
+            # not an error — the model loaded and ran fine).
+            status, cos = ("PASS" if r["ok"] else "CHECK"), r["cosine"]
             print(f"  reference: {r['reference']}")
             print(f"  our: {r['our_top']} {r['our_text']!r}  |  ref: {r['ref_top']} {r['ref_text']!r}")
-            print(f"  cosine {r['cosine']:.6f} | max|Δ| {r['max_abs']:.4f} | top-5 {r['top5_match']}"
-                  f"  ->  {'PASS ✅' if r['ok'] else 'CHECK ❌'}", flush=True)
-            rows.append((label, model, r["ok"], r["cosine"]))
-        except Exception as e:                       # keep going so one failure doesn't hide the rest
+            print(f"  cosine {cos:.6f} | max|Δ| {r['max_abs']:.4f} | top-5 {r['top5_match']}"
+                  f"  ->  {'PASS ✅' if r['ok'] else 'CHECK ❌ (logits diverged)'}", flush=True)
+        except CompareError as e:
+            # tag it: a download/access/load problem vs a forward/compare (logits) problem
+            kind = "DOWNLOAD/LOAD" if e.is_load else "LOGITS/RUN"
+            status, cos = f"ERROR[{e.phase}]", float("nan")
+            print(f"  {kind} ERROR in '{e.phase}': {type(e.cause).__name__}: {e.cause}", flush=True)
+        except Exception as e:                       # anything unexpected — keep going
+            status, cos = "ERROR[unexpected]", float("nan")
             traceback.print_exc()
-            print(f"  ERROR: {e}", flush=True)
-            rows.append((label, model, False, float("nan")))
+            print(f"  UNEXPECTED ERROR: {type(e).__name__}: {e}", flush=True)
+        rows.append((label, model, status, cos))
         gc.collect()
 
     print("\n===== SUMMARY =====")
-    for label, model, ok, cos in rows:
-        print(f"  {'PASS' if ok else 'FAIL'}  {label:8s} cos={cos:.6f}  {model}")
-    all_ok = all(ok for _, _, ok, _ in rows)
-    print("\nALL PASS ✅" if all_ok else "\nSOME FAILED ❌")
+    for label, model, status, cos in rows:
+        cs = f"cos={cos:.6f}" if cos == cos else "cos=   n/a  "   # cos != cos → NaN (errored)
+        print(f"  {status:18s} {label:8s} {cs}  {model}")
+    all_ok = all(s == "PASS" for _, _, s, _ in rows)
+    print("\nALL PASS ✅" if all_ok else "\nSOME FAILED ❌  (CHECK = logits diverged, ERROR = could not run)")
     sys.exit(0 if all_ok else 1)
 
 

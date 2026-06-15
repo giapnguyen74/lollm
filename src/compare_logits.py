@@ -20,6 +20,7 @@ Memory note: a 4B model in fp32 is ~16 GB. We extract our logits and free our mo
 from __future__ import annotations
 
 import argparse
+import contextlib
 import gc
 import json
 import os
@@ -28,6 +29,28 @@ import torch
 
 import loader
 import router
+
+
+class CompareError(Exception):
+    """A parity-check failure tagged with the phase it happened in, so callers can tell a
+    download/access problem from our forward, the reference forward, or the comparison."""
+
+    # phases that are about *getting the model* vs *running/comparing* it
+    LOAD_PHASES = {"download", "load-ours", "load-reference"}
+
+    def __init__(self, phase: str, cause: Exception):
+        self.phase = phase
+        self.cause = cause
+        self.is_load = phase in self.LOAD_PHASES
+        super().__init__(f"{phase}: {type(cause).__name__}: {cause}")
+
+
+@contextlib.contextmanager
+def _phase(name: str):
+    try:
+        yield
+    except Exception as e:
+        raise CompareError(name, e) from e
 
 
 def _reference_class(path: str):
@@ -51,41 +74,50 @@ def compare(model_spec: str, prompt: str = "The capital of France is") -> dict:
     """Run our family + the transformers reference on `prompt`; return a result dict.
 
     Loads one model at a time (ours, freed, then the reference) so peak memory stays near a
-    single model. PASS = same argmax token and cosine > 0.9999.
+    single model. PASS = same argmax token and cosine > 0.9999. Raises `CompareError`
+    (tagged with the failing phase) on any download / load / forward problem.
     """
-    path = loader.resolve(model_spec)
+    with _phase("download"):                         # snapshot_download (network/404/gated)
+        path = loader.resolve(model_spec)
 
     # ── ours (fp32 on CPU) ──
-    L = loader.load(model_spec)
-    model = router.route(L.model_type).load(L.raw_config, L.weights, L.fmt, "cpu", torch.float32)
-    ids = L.tokenizer.encode(prompt)
-    ours, _ = model(torch.tensor([ids]))
-    ours = ours[0, -1].float().clone()
+    with _phase("load-ours"):
+        L = loader.load(model_spec)
+        model = router.route(L.model_type).load(
+            L.raw_config, L.weights, L.fmt, "cpu", torch.float32)
+    with _phase("forward-ours"):
+        ids = L.tokenizer.encode(prompt)
+        ours, _ = model(torch.tensor([ids]))
+        ours = ours[0, -1].float().clone()
     del model, L                     # free before the reference loads
     gc.collect()
 
     # ── reference (same prompt, text branch for multimodal checkpoints) ──
-    ref_cls, ref_name = _reference_class(path)
-    ref = ref_cls.from_pretrained(path, dtype=torch.float32).eval()
-    with torch.no_grad():
-        r = ref(torch.tensor([ids])).logits[0, -1].float()
+    with _phase("load-reference"):
+        ref_cls, ref_name = _reference_class(path)
+        ref = ref_cls.from_pretrained(path, dtype=torch.float32).eval()
+    with _phase("forward-reference"):
+        with torch.no_grad():
+            r = ref(torch.tensor([ids])).logits[0, -1].float()
     del ref                          # free the reference before returning
     gc.collect()
 
-    from tokenization import HFTokenizer
-    decode = HFTokenizer(path).decode      # fresh tokenizer (we freed L above)
-    ot, rt = int(ours.argmax()), int(r.argmax())
-    # Gate on the *meaningful* signals: same prediction + near-identical direction. Raw
-    # max|Δ| is noisy across kernels (fp32 summation order) — reported, not gated.
-    return {
-        "model": model_spec, "reference": ref_name,
-        "our_top": ot, "our_text": decode([ot]),
-        "ref_top": rt, "ref_text": decode([rt]),
-        "max_abs": (ours - r).abs().max().item(),
-        "cosine": torch.nn.functional.cosine_similarity(ours, r, dim=0).item(),
-        "top5_match": ours.topk(5).indices.tolist() == r.topk(5).indices.tolist(),
-        "ok": ot == rt and torch.nn.functional.cosine_similarity(ours, r, dim=0).item() > 0.9999,
-    }
+    with _phase("compare"):
+        from tokenization import HFTokenizer
+        decode = HFTokenizer(path).decode      # fresh tokenizer (we freed L above)
+        ot, rt = int(ours.argmax()), int(r.argmax())
+        cos = torch.nn.functional.cosine_similarity(ours, r, dim=0).item()
+        # Gate on the *meaningful* signals: same prediction + near-identical direction. Raw
+        # max|Δ| is noisy across kernels (fp32 summation order) — reported, not gated.
+        return {
+            "model": model_spec, "reference": ref_name,
+            "our_top": ot, "our_text": decode([ot]),
+            "ref_top": rt, "ref_text": decode([rt]),
+            "max_abs": (ours - r).abs().max().item(),
+            "cosine": cos,
+            "top5_match": ours.topk(5).indices.tolist() == r.topk(5).indices.tolist(),
+            "ok": ot == rt and cos > 0.9999,
+        }
 
 
 def main():
