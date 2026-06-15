@@ -92,10 +92,15 @@ class Qwen3_5MoeConfig:
         n_head = t["num_attention_heads"]
         rp = t.get("rope_parameters", {})
         partial = rp.get("partial_rotary_factor", t.get("partial_rotary_factor", 1.0))
+        # A fully-sparse MoE checkpoint has no dense `intermediate_size` (every layer is MoE);
+        # it's only needed for `mlp_only_layers` / skipped strides. Fall back to the expert
+        # width so the dense MLP is still constructible if a config does force a dense layer.
+        moe_inter = t.get("moe_intermediate_size", t.get("intermediate_size", 0))
+        dense_inter = t.get("intermediate_size", moe_inter)
         return cls(
             vocab_size=t["vocab_size"],
             hidden_size=hidden,
-            intermediate_size=t["intermediate_size"],
+            intermediate_size=dense_inter,
             num_hidden_layers=t["num_hidden_layers"],
             num_attention_heads=n_head,
             num_key_value_heads=t.get("num_key_value_heads", n_head),
@@ -118,7 +123,7 @@ class Qwen3_5MoeConfig:
             # ── MoE ──
             num_experts=t.get("num_experts", t.get("n_routed_experts", 0)),
             num_experts_per_tok=t.get("num_experts_per_tok", t.get("num_experts_per_token", 0)),
-            moe_intermediate_size=t.get("moe_intermediate_size", t["intermediate_size"]),
+            moe_intermediate_size=moe_inter,
             shared_expert_intermediate_size=t.get("shared_expert_intermediate_size", 0),
             norm_topk_prob=t.get("norm_topk_prob", True),
             decoder_sparse_step=t.get("decoder_sparse_step", 1),
