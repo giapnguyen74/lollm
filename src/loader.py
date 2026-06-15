@@ -17,7 +17,17 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
+# Silence huggingface_hub's tqdm bars (the "Download complete: 0.00B" / "Fetching N files"
+# spam that fires on the dry-run + cached snapshot_download calls). We print our own concise
+# status below, so the hub's bars are pure noise. Set before importing the hub so it takes.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 from huggingface_hub import hf_hub_download, list_repo_files, snapshot_download
+
+try:                                                             # belt-and-suspenders
+    from huggingface_hub.utils import disable_progress_bars
+    disable_progress_bars()
+except Exception:
+    pass                                                         # env var above already covers it
 from safetensors.torch import load_file
 
 from dequant import dequantize
