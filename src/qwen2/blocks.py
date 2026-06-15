@@ -69,7 +69,7 @@ class Attention(nn.Module):
         self.v_proj = nn.Linear(h, self.n_kv * hd, bias=True)
         self.o_proj = nn.Linear(self.n_head * hd, h, bias=False)
 
-    def forward(self, x, cos, sin, past_kv):
+    def forward(self, x, cos, sin, cache=None, layer_idx=0):
         b, t, _ = x.shape
         # 1. PROJECT to queries/keys/values, split into heads.
         #    GQA: fewer KV heads (n_kv) than query heads (n_head).
@@ -78,11 +78,10 @@ class Attention(nn.Module):
         v = self.v_proj(x).view(b, t, self.n_kv, self.head_dim).transpose(1, 2)
         # 2. ROPE — rotate Q and K by their positions.
         q, k = RoPE.apply(q, k, cos, sin)
-        # 3. KV CACHE — append this step's K,V to the cached past (then keep it).
-        if past_kv is not None:
-            k = torch.cat([past_kv[0], k], dim=2)
-            v = torch.cat([past_kv[1], v], dim=2)
-        new_kv = (k, v)
+        # 3. KV CACHE — the cache owns storage: append this step's K,V and read back the
+        #    full K,V to attend over (no cache → attend over just this step).
+        if cache is not None:
+            k, v = cache.append_kv(layer_idx, k, v)
         # 4. GQA EXPAND — repeat KV heads to match the query head count.
         k, v = _repeat_kv(k, self.n_rep), _repeat_kv(v, self.n_rep)
         # 5. ATTENTION — scaled dot-product, causal.
@@ -100,7 +99,7 @@ class Attention(nn.Module):
             o = F.scaled_dot_product_attention(q, k, v, is_causal=q_len > 1)
         # 6. MERGE heads and project back to hidden size.
         o = o.transpose(1, 2).reshape(b, t, self.n_head * self.head_dim)
-        return self.o_proj(o), new_kv
+        return self.o_proj(o)
 
 
 class MLP(nn.Module):

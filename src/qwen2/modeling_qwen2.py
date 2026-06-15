@@ -14,6 +14,7 @@ import torch.nn as nn
 
 from .config import Qwen2Config
 from .blocks import RMSNorm, RoPE, Attention, MLP
+from .kv import Qwen2Cache
 
 
 class DecoderLayer(nn.Module):
@@ -26,13 +27,13 @@ class DecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
         self.mlp = MLP(cfg)
 
-    def forward(self, x, cos, sin, past_kv):
+    def forward(self, x, cos, sin, cache=None, layer_idx=0):
         # 1. ATTENTION sub-block (mixes info ACROSS tokens): x = x + attn(norm(x)).
-        h, new_kv = self.self_attn(self.input_layernorm(x), cos, sin, past_kv)
+        h = self.self_attn(self.input_layernorm(x), cos, sin, cache, layer_idx)
         x = x + h
         # 2. MLP sub-block (transforms EACH token on its own): x = x + mlp(norm(x)).
         x = x + self.mlp(self.post_attention_layernorm(x))
-        return x, new_kv
+        return x
 
 
 class Qwen2Model(nn.Module):
@@ -60,22 +61,22 @@ class Qwen2Model(nn.Module):
         x = self.model.embed_tokens(input_ids)
 
         # 2. POSITIONS — where these tokens sit in the sequence. With a KV cache we
-        #    feed only the *new* tokens, so positions start after the cached length.
-        past_len = 0 if past is None else past[0][0].shape[2]
+        #    feed only the *new* tokens, so positions start after the cached length
+        #    (read from the cache's own counter, not a tensor-shape probe).
+        cache = past if past is not None else Qwen2Cache(self.cfg.num_hidden_layers)
+        past_len = cache.seen_tokens
         positions = torch.arange(past_len, past_len + t, device=input_ids.device)
         #    Build the RoPE cos/sin tables for those positions (used in attention).
         cos, sin = self._rope_for(input_ids.device).cos_sin(positions, x.dtype)
 
-        # 3. DECODER STACK — N layers of (attention + MLP); each reads & grows its
-        #    own KV cache. This is the bulk of the model.
-        new_past = []
+        # 3. DECODER STACK — N layers of (attention + MLP); each reads & grows its slot
+        #    through the cache's methods. This is the bulk of the model.
         for i, layer in enumerate(self.model.layers):
-            pkv = None if past is None else past[i]
-            x, kv = layer(x, cos, sin, pkv)
-            new_past.append(kv)
+            x = layer(x, cos, sin, cache, i)
+        cache.advance(t)
 
         # 4. FINAL NORM.
         x = self.model.norm(x)
 
         # 5. LM HEAD — project hidden states to one logit per vocab token. (B, T, V)
-        return self.lm_head(x), new_past
+        return self.lm_head(x), cache

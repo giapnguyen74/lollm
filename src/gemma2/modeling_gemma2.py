@@ -14,6 +14,7 @@ import torch.nn as nn
 
 from .config import Gemma2Config
 from .blocks import GemmaRMSNorm, RoPE, GemmaAttention, GemmaMLP
+from .kv import Gemma2Cache
 
 
 class DecoderLayer(nn.Module):
@@ -33,14 +34,14 @@ class DecoderLayer(nn.Module):
         self.mlp = GemmaMLP(cfg)
         self.post_feedforward_layernorm = GemmaRMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
 
-    def forward(self, x, cos, sin, past_kv):
+    def forward(self, x, cos, sin, cache=None, layer_idx=0):
         # 1. ATTENTION sub-block (sandwich): x = x + post_norm(attn(pre_norm(x))).
-        h, new_kv = self.self_attn(self.input_layernorm(x), cos, sin, past_kv)
+        h = self.self_attn(self.input_layernorm(x), cos, sin, cache, layer_idx)
         x = x + self.post_attention_layernorm(h)
         # 2. MLP sub-block (sandwich):        x = x + post_norm(mlp(pre_norm(x))).
         h = self.mlp(self.pre_feedforward_layernorm(x))
         x = x + self.post_feedforward_layernorm(h)
-        return x, new_kv
+        return x
 
 
 class Gemma2Model(nn.Module):
@@ -69,17 +70,17 @@ class Gemma2Model(nn.Module):
         x = self.model.embed_tokens(input_ids)
         x = x * torch.tensor(self.cfg.hidden_size ** 0.5, dtype=x.dtype, device=x.device)
 
-        # 2. POSITIONS (offset by KV-cache length) + RoPE cos/sin.
-        past_len = 0 if past is None else past[0][0].shape[2]
+        # 2. POSITIONS (offset by the cache's own counter) + RoPE cos/sin.
+        cache = past if past is not None else Gemma2Cache(self.cfg.num_hidden_layers)
+        past_len = cache.seen_tokens
         positions = torch.arange(past_len, past_len + t, device=input_ids.device)
         cos, sin = self._rope_for(input_ids.device).cos_sin(positions, x.dtype)
 
-        # 3. DECODER STACK — alternating local (sliding) / global layers.
-        new_past = []
+        # 3. DECODER STACK — alternating local (sliding) / global layers; each reads/grows
+        #    its slot through the cache's methods.
         for i, layer in enumerate(self.model.layers):
-            pkv = None if past is None else past[i]
-            x, kv = layer(x, cos, sin, pkv)
-            new_past.append(kv)
+            x = layer(x, cos, sin, cache, i)
+        cache.advance(t)
 
         # 4. FINAL NORM.
         x = self.model.norm(x)
@@ -89,4 +90,4 @@ class Gemma2Model(nn.Module):
         if self.cfg.final_logit_softcapping is not None:
             sc = self.cfg.final_logit_softcapping
             logits = torch.tanh(logits / sc) * sc
-        return logits, new_past
+        return logits, cache

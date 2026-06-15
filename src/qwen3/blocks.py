@@ -71,7 +71,7 @@ class Attention(nn.Module):
         self.q_norm = RMSNorm(hd, cfg.rms_norm_eps)                # QK-norm (NEW)
         self.k_norm = RMSNorm(hd, cfg.rms_norm_eps)
 
-    def forward(self, x, cos, sin, past_kv):
+    def forward(self, x, cos, sin, cache=None, layer_idx=0):
         b, t, _ = x.shape
         # 1. PROJECT to Q/K/V, split into heads (no bias).
         q = self.q_proj(x).view(b, t, self.n_head, self.head_dim)
@@ -82,11 +82,9 @@ class Attention(nn.Module):
         k = self.k_norm(k).transpose(1, 2)
         # 3. ROPE.
         q, k = RoPE.apply(q, k, cos, sin)
-        # 4. KV CACHE.
-        if past_kv is not None:
-            k = torch.cat([past_kv[0], k], dim=2)
-            v = torch.cat([past_kv[1], v], dim=2)
-        new_kv = (k, v)
+        # 4. KV CACHE — cache owns storage: append this step's K,V, read back the full K,V.
+        if cache is not None:
+            k, v = cache.append_kv(layer_idx, k, v)
         # 5. GQA EXPAND.
         k, v = _repeat_kv(k, self.n_rep), _repeat_kv(v, self.n_rep)
         # 6. ATTENTION — scaled dot-product, causal.
@@ -104,7 +102,7 @@ class Attention(nn.Module):
             o = F.scaled_dot_product_attention(q, k, v, is_causal=q_len > 1)
         # 7. MERGE heads + output projection.
         o = o.transpose(1, 2).reshape(b, t, self.n_head * self.head_dim)
-        return self.o_proj(o), new_kv
+        return self.o_proj(o)
 
 
 class MLP(nn.Module):

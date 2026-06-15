@@ -12,6 +12,7 @@ import torch.nn as nn
 
 from .config import Qwen3Config
 from .blocks import RMSNorm, RoPE, Attention, MLP
+from .kv import Qwen3Cache
 
 
 class DecoderLayer(nn.Module):
@@ -24,11 +25,11 @@ class DecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
         self.mlp = MLP(cfg)
 
-    def forward(self, x, cos, sin, past_kv):
-        h, new_kv = self.self_attn(self.input_layernorm(x), cos, sin, past_kv)
+    def forward(self, x, cos, sin, cache=None, layer_idx=0):
+        h = self.self_attn(self.input_layernorm(x), cos, sin, cache, layer_idx)
         x = x + h
         x = x + self.mlp(self.post_attention_layernorm(x))
-        return x, new_kv
+        return x
 
 
 class Qwen3Model(nn.Module):
@@ -52,17 +53,16 @@ class Qwen3Model(nn.Module):
         b, t = input_ids.shape
         # 1. EMBED — token ids → vectors.
         x = self.model.embed_tokens(input_ids)
-        # 2. POSITIONS (offset by KV cache) + RoPE cos/sin.
-        past_len = 0 if past is None else past[0][0].shape[2]
+        # 2. POSITIONS (offset by the cache's own counter) + RoPE cos/sin.
+        cache = past if past is not None else Qwen3Cache(self.cfg.num_hidden_layers)
+        past_len = cache.seen_tokens
         positions = torch.arange(past_len, past_len + t, device=input_ids.device)
         cos, sin = self._rope_for(input_ids.device).cos_sin(positions, x.dtype)
-        # 3. DECODER STACK.
-        new_past = []
+        # 3. DECODER STACK — each layer reads/grows its slot through the cache's methods.
         for i, layer in enumerate(self.model.layers):
-            pkv = None if past is None else past[i]
-            x, kv = layer(x, cos, sin, pkv)
-            new_past.append(kv)
+            x = layer(x, cos, sin, cache, i)
+        cache.advance(t)
         # 4. FINAL NORM.
         x = self.model.norm(x)
         # 5. LM HEAD.
-        return self.lm_head(x), new_past
+        return self.lm_head(x), cache
