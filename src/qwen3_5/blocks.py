@@ -15,6 +15,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from attention import attention
+
 from .config import Qwen3_5Config
 
 
@@ -225,15 +227,9 @@ class GatedAttention(nn.Module):
             k, v = cache.append_kv(layer_idx, k, v)
         # 5. GQA EXPAND.
         k, v = _repeat_kv(k, self.n_rep), _repeat_kv(v, self.n_rep)
-        # 6. ATTENTION — causal (scale = head_dim**-0.5 = SDPA default).
-        q_len, total_k = q.shape[2], k.shape[2]
-        if q_len > 1 and q_len != total_k:                            # chunked prefill w/ cache
-            qpos = torch.arange(total_k - q_len, total_k, device=q.device)
-            kpos = torch.arange(total_k, device=q.device)
-            mask = (kpos[None, :] <= qpos[:, None])[None, None]
-            o = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
-        else:
-            o = F.scaled_dot_product_attention(q, k, v, is_causal=q_len > 1)
+        # 6. ATTENTION — offset-causal SDPA (Triton flash on CUDA, torch elsewhere).
+        #    scale = head_dim**-0.5 (SDPA default); see attention.py for path selection.
+        o = attention(q, k, v)
         # 7. MERGE heads, OUTPUT GATE, project.
         o = o.transpose(1, 2).reshape(b, t, self.n_head * self.head_dim)
         o = o * self.gate_act(gate)

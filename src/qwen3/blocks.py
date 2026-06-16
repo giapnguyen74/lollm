@@ -14,6 +14,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from attention import attention
+
 from .config import Qwen3Config
 
 
@@ -87,19 +89,10 @@ class Attention(nn.Module):
             k, v = cache.append_kv(layer_idx, k, v)
         # 5. GQA EXPAND.
         k, v = _repeat_kv(k, self.n_rep), _repeat_kv(v, self.n_rep)
-        # 6. ATTENTION — scaled dot-product, causal.
-        #    Three cases: plain prefill (no cache) → is_causal; decode (one query,
-        #    attends to all cached keys) → no mask; chunked prefill (q_len>1 WITH a
-        #    cache) → SDPA's is_causal misaligns (it assumes q,k share a start), so
-        #    build an explicit position mask offset by the cached length.
-        q_len, total_k = q.shape[2], k.shape[2]
-        if q_len > 1 and q_len != total_k:
-            qpos = torch.arange(total_k - q_len, total_k, device=q.device)
-            kpos = torch.arange(total_k, device=q.device)
-            mask = (kpos[None, :] <= qpos[:, None])[None, None]
-            o = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
-        else:
-            o = F.scaled_dot_product_attention(q, k, v, is_causal=q_len > 1)
+        # 6. ATTENTION — offset-causal SDPA (Triton flash on CUDA, torch elsewhere).
+        #    Covers plain prefill, decode (one query → all cached keys), and chunked
+        #    prefill with a cache; see attention.py for the path selection.
+        o = attention(q, k, v)
         # 7. MERGE heads + output projection.
         o = o.transpose(1, 2).reshape(b, t, self.n_head * self.head_dim)
         return self.o_proj(o)
