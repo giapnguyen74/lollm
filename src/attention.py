@@ -5,13 +5,14 @@ block. It is offset-causal (KV-cache aware) and covers all three inference
 regimes — plain prefill, decode (q_len == 1), and chunked prefill with a cache.
 
 Path selection:
-  • CUDA + Triton installed  -> `_triton_attn.flash_attention_kv`
-  • everything else          -> `torch_attention` (F.scaled_dot_product_attention)
+Torch is the default. The Triton kernel is opt-in via the LOLLM_ATTN env var:
+
+  • LOLLM_ATTN unset / "torch"  -> always torch_attention (F.scaled_dot_product_attention)
+  • LOLLM_ATTN="triton"         -> Triton kernel; raises if unavailable (CUDA tensor + triton)
+  • LOLLM_ATTN="auto"           -> Triton when available (CUDA + installed), else torch
 
 The Triton import is lazy and guarded: on macOS/CPU-only installs Triton isn't
-present, so the import fails once, the result is cached, and we stay on the torch
-path forever after. Set LOLLM_ATTN=torch to force the fallback (A/B / debugging),
-or LOLLM_ATTN=triton to require it (raises if unavailable on a CUDA tensor).
+present, so the import fails once, the result is cached, and we stay on torch.
 """
 from __future__ import annotations
 
@@ -51,7 +52,7 @@ def torch_attention(q, k, v):
 
 def attention(q, k, v):
     """Offset-causal attention. Triton flash kernel on CUDA; torch SDPA elsewhere."""
-    mode = os.environ.get("LOLLM_ATTN", "auto")   # auto | torch | triton
+    mode = os.environ.get("LOLLM_ATTN", "torch")  # torch (default) | triton | auto
     if mode == "triton" and not (q.is_cuda and _have_triton()):
         raise RuntimeError("LOLLM_ATTN=triton but Triton is unavailable (need a CUDA tensor + triton installed)")
     if mode != "torch" and q.is_cuda and _have_triton():

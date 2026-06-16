@@ -17,17 +17,11 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
-# Silence huggingface_hub's tqdm bars (the "Download complete: 0.00B" / "Fetching N files"
-# spam that fires on the dry-run + cached snapshot_download calls). We print our own concise
-# status below, so the hub's bars are pure noise. Set before importing the hub so it takes.
-os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+
 from huggingface_hub import hf_hub_download, list_repo_files, snapshot_download
 
-try:                                                             # belt-and-suspenders
-    from huggingface_hub.utils import disable_progress_bars
-    disable_progress_bars()
-except Exception:
-    pass                                                         # env var above already covers it
+                                                      
 from safetensors.torch import load_file
 
 from dequant import dequantize
@@ -69,28 +63,11 @@ def resolve(spec: str, token: str | None = None) -> str:
         print(f"[downloading {repo} :: {chosen}]", flush=True)
         return hf_hub_download(repo, chosen, token=token)
 
-    # safetensors repo. Ask the hub — same command, `dry_run=True` — what (if anything) needs
-    # fetching, so a fully-cached model skips the download and we can size what's left.
+    # safetensors repo. One snapshot_download fetches whatever's missing and reuses the cache
+    # for the rest — the hub no-ops cached files. Bars are silenced via HF_HUB_DISABLE_PROGRESS_BARS
+    # (set above), so this stays quiet; we print one concise line ourselves.
     kw = dict(token=token, allow_patterns=_HF_PATTERNS)
-
-    pending = None
-    try:
-        plan = snapshot_download(spec, dry_run=True, **kw)        # list[DryRunFileInfo], no download
-        pending = [f for f in plan if getattr(f, "will_download", True)]
-    except Exception:
-        pending = None                                           # old hub / offline → handle below
-
-    if pending == []:                                            # everything cached → no download
-        print(f"[{spec}: fully cached, skipping download]", file=sys.stderr, flush=True)
-        return snapshot_download(spec, local_files_only=True, **kw)
-    if pending is None:                                          # couldn't plan → try cache, else fetch
-        try:
-            return snapshot_download(spec, local_files_only=True, **kw)
-        except Exception:
-            pass
-    elif pending:                                                # some files to fetch — say how much
-        mb = sum((getattr(f, "file_size", 0) or 0) for f in pending) / 1e6
-        print(f"[{spec}: downloading {len(pending)} file(s) (~{mb:.0f} MB)]", file=sys.stderr, flush=True)
+    print(f"[resolving {spec} (downloading if needed)]", file=sys.stderr, flush=True)
     return snapshot_download(spec, **kw)
 
 
