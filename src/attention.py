@@ -17,6 +17,7 @@ present, so the import fails once, the result is cached, and we stay on torch.
 from __future__ import annotations
 
 import os
+import sys
 
 import torch
 import torch.nn.functional as F
@@ -58,3 +59,24 @@ def attention(q, k, v):
     if mode != "torch" and q.is_cuda and _have_triton():
         return _kernel(q, k, v)
     return torch_attention(q, k, v)
+
+
+def warmup(*, head_dim, n_heads=8, seq=1024, device, dtype=torch.bfloat16):
+    """Compile + autotune the Triton kernel ahead of time (call once after model load).
+
+    The autotune sweep (16 configs) and JIT compile otherwise land on the FIRST
+    attention call — i.e. layer 0's prefill — inflating time-to-first-token. Running
+    one throwaway call here moves that cost off the critical path. Tuning keys only on
+    head_dim, so the config chosen here is reused for every later prefill and decode.
+
+    No-op unless LOLLM_ATTN enables Triton and a CUDA device with Triton is present.
+    """
+    mode = os.environ.get("LOLLM_ATTN", "torch")
+    if mode == "torch" or not (str(device).startswith("cuda") and _have_triton()):
+        return
+    print(f"[triton attention: warming up (head_dim={head_dim})]", file=sys.stderr, flush=True)
+    q = torch.randn(1, n_heads, seq, head_dim, device=device, dtype=dtype)
+    k = torch.randn(1, n_heads, seq, head_dim, device=device, dtype=dtype)
+    v = torch.randn(1, n_heads, seq, head_dim, device=device, dtype=dtype)
+    _kernel(q, k, v)
+    torch.cuda.synchronize()

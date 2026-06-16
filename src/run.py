@@ -14,6 +14,7 @@ import time
 
 import torch
 
+import attention
 import loader
 import router
 from generate import generate
@@ -84,6 +85,16 @@ def main():
     model = fam.load(L.raw_config, L.weights, L.fmt, device, pick_dtype(device),
                      progress=bar(f"streaming → {device}"))
     print(f"[{L.fmt} | {L.model_type} | loaded in {time.time()-t0:.1f}s]", file=sys.stderr)
+
+    # Warm up the Triton attention kernel (compile + autotune) off the critical path, so the
+    # one-time sweep doesn't land on the first prefill. No-op unless LOLLM_ATTN enables triton.
+    try:
+        rc = L.raw_config
+        hd = rc.get("head_dim") or (rc["hidden_size"] // rc["num_attention_heads"])
+        nh = rc.get("num_attention_heads", 8)
+        attention.warmup(head_dim=hd, n_heads=nh, device=device, dtype=pick_dtype(device))
+    except Exception as e:                        # best-effort: never let warmup break a run
+        print(f"[triton warmup skipped: {e}]", file=sys.stderr)
 
     sampling = resolve_sampling(
         L.gen_meta["sampling"], fam.defaults,
