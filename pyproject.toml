@@ -24,6 +24,14 @@ dependencies = [
     "jinja2>=3.1",           # render the GGUF-embedded chat template (SPM path)
 ]
 
+# Optional extras. Triton has Linux-only wheels and ships with the CUDA PyTorch build,
+# so it is NOT a core dependency — the engine defaults to torch SDPA everywhere and only
+# uses the Triton flash kernel when LOLLM_ATTN enables it (see src/attention.py). Install
+# it deliberately on the CUDA workstation:  pip install -e ".[triton]"  (no-op / unavailable
+# on macOS, where there is no Triton wheel).
+[project.optional-dependencies]
+triton = ["triton>=2.2"]
+
 [project.scripts]
 lollm = "run:main"
 compare = "compare_logits:main"
