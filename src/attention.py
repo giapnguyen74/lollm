@@ -51,6 +51,36 @@ def torch_attention(q, k, v):
     return F.scaled_dot_product_attention(q, k, v, is_causal=q_len > 1)
 
 
+def torch_attention_with_scale(q, k, v, scale, sliding_window=None, softcap=None):
+    """`torch_attention`, but with an explicit softmax `scale` and the Gemma extras —
+    laid right below it so the two read line-by-line.
+
+    Differences vs `torch_attention`:
+      • explicit `scale` (Gemma: `query_pre_attn_scalar**-0.5`, not SDPA's `1/sqrt(D)`);
+      • optional attn-logit `softcap` (Gemma2) — can't be expressed via SDPA;
+      • optional `sliding_window` band mask (local layers);
+      • manual scores + fp32 softmax (so the soft-cap fits and large Gemma logits stay
+        safe), instead of `F.scaled_dot_product_attention`.
+    The caller has already projected, applied QK-norm/RoPE, appended to the cache, and
+    GQA-expanded K/V. A Gemma-specific kernel may replace this later (see docs/ISSUES.md).
+
+        q: (B, H, q_len, D)   k, v: (B, H, total_k, D)   total_k >= q_len
+    """
+    q_len, total_k = q.shape[-2], k.shape[-2]
+    scores = torch.matmul(q, k.transpose(2, 3)) * scale
+    if softcap is not None:                                   # Gemma2 attn-logit soft-cap
+        scores = torch.tanh(scores / softcap) * softcap
+    past_len = total_k - q_len
+    qpos = torch.arange(past_len, total_k, device=q.device)
+    kpos = torch.arange(total_k, device=q.device)
+    allowed = kpos[None, :] <= qpos[:, None]                  # causal
+    if sliding_window is not None:                            # local layers: band mask
+        allowed = allowed & ((qpos[:, None] - kpos[None, :]) < sliding_window)
+    scores = scores.masked_fill(~allowed[None, None], float("-inf"))
+    attn = torch.softmax(scores.float(), dim=-1).to(q.dtype)
+    return torch.matmul(attn, v)
+
+
 def attention(q, k, v):
     """Offset-causal attention. Triton flash kernel on CUDA; torch SDPA elsewhere."""
     mode = os.environ.get("LOLLM_ATTN", "torch")  # torch (default) | triton | auto

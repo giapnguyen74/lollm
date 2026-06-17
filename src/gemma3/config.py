@@ -68,8 +68,15 @@ class Gemma3Config:
         # carried either inside rope_parameters.full_attention or as a top-level
         # rope_scaling dict.
         scale = 1.0
-        rs = full if "factor" in full else raw.get("rope_scaling") or {}
-        if rs and rs.get("rope_type") in ("linear", "default", None) and "factor" in rs:
+        rs = full if "factor" in full else (raw.get("rope_scaling") or {})
+        if "factor" in rs:
+            rtype = rs.get("rope_type", "linear")
+            if rtype not in ("linear", "default"):
+                # Hard-fail rather than mis-scale long-context positions: only plain
+                # linear scaling is implemented. yarn/llama3/etc. need their own math.
+                raise NotImplementedError(
+                    f"gemma3: unsupported RoPE scaling rope_type={rtype!r} "
+                    f"(only 'linear'/'default' implemented). Refusing to guess.")
             scale = float(rs["factor"])
 
         # Gemma3 dropped soft-capping; assert we aren't silently ignoring it.

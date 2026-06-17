@@ -117,7 +117,9 @@ rather than default (see each family's `config.py::from_gguf`).
 Shared infra: loader/router/streaming generate loop · GGUF parse + dequant
 (Q4_K/Q5_K/Q6_K/Q5_0/…) · uniform tokenizer (BPE + SentencePiece) · streaming weight
 load (peak ≈ steady) with a progress bar · cache-aware download skip · per-family
-`kv.py` cache · the `compare_logits` / `sanity_test` parity gate.
+`kv.py` cache · an optional Triton flash-attention kernel (CUDA, opt-in via
+`LOLLM_ATTN`; torch SDPA is the default/validated path) · the `compare_logits` /
+`sanity_test` parity gate plus offline family self-tests (e.g. `gemma3_selftest.py`).
 
 ## TODO
 
@@ -127,3 +129,6 @@ load (peak ≈ steady) with a progress bar · cache-aware download skip · per-f
 - ⬜ **GGUF MoE** (stacked experts) — and validate gemma2/gemma3 GGUF metadata keys
   against llama.cpp to lift the hard-fail.
 - ⬜ Drop the `transformers.AutoTokenizer` dependency on the safetensors path.
+
+See **[docs/ISSUES.md](docs/ISSUES.md)** for the reviewed backlog (fp16-on-MPS Gemma
+risk, KV-cache/perf cliffs, etc.).

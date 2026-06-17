@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from attention import torch_attention_with_scale
 from .config import Gemma2Config
 
 
@@ -93,23 +94,11 @@ class GemmaAttention(nn.Module):
             k, v = cache.append_kv(layer_idx, k, v)
         # 4. GQA EXPAND.
         k, v = _repeat_kv(k, self.n_rep), _repeat_kv(v, self.n_rep)
-        # 5. SCORES — Gemma scale, then attention logit soft-cap.
-        scores = torch.matmul(q, k.transpose(2, 3)) * self.scaling
-        if self.attn_softcap is not None:
-            scores = torch.tanh(scores / self.attn_softcap) * self.attn_softcap
-        # 6. MASK — causal, plus a sliding window on local layers.
-        total_k = k.shape[2]
-        past_len = total_k - t
-        qpos = torch.arange(past_len, total_k, device=x.device)
-        kpos = torch.arange(0, total_k, device=x.device)
-        allowed = kpos[None, :] <= qpos[:, None]                       # causal
-        if self.sliding_window is not None:
-            allowed = allowed & ((qpos[:, None] - kpos[None, :]) < self.sliding_window)
-        scores = scores.masked_fill(~allowed[None, None], float("-inf"))
-        # 7. SOFTMAX (in fp32) + weighted sum.
-        attn = torch.softmax(scores.float(), dim=-1).to(q.dtype)
-        o = torch.matmul(attn, v)
-        # 8. MERGE heads + output projection.
+        # 5. ATTENTION — Gemma scale, attn-logit soft-cap, and (local) sliding-window
+        #    band mask. Shared helper (fp32 softmax); see attention.torch_attention_with_scale.
+        o = torch_attention_with_scale(q, k, v, self.scaling,
+                                       self.sliding_window, self.attn_softcap)
+        # 6. MERGE heads + output projection.
         o = o.transpose(1, 2).reshape(b, t, self.n_head * self.head_dim)
         return self.o_proj(o)
 

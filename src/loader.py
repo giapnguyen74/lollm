@@ -60,7 +60,7 @@ def resolve(spec: str, token: str | None = None) -> str:
             raise FileNotFoundError(f"no .gguf matching '{quant}' in {repo}. Available: {files}")
         shard0 = [m for m in matches if "00001-of" in m]
         chosen = shard0[0] if shard0 else matches[0]
-        print(f"[downloading {repo} :: {chosen}]", flush=True)
+        print(f"[downloading {repo} :: {chosen}]", file=sys.stderr, flush=True)
         return hf_hub_download(repo, chosen, token=token)
 
     # safetensors repo. One snapshot_download fetches whatever's missing and reuses the cache
