@@ -2,10 +2,11 @@
 
 A small, readable inference engine for **studying how LLMs (and related models) run
 inference**. A thin **loader + router**, a shared **generate loop**, and
-self-contained **family packages** — currently **qwen2 · qwen3 · gemma2 · qwen3_5**
-(the last covering **Qwen3.5 / Qwen3.6**: a hybrid Gated-DeltaNet + gated-attention
-decoder, with an optional MTP speculative head), from HF safetensors **and** GGUF
-(qwen3_5 is safetensors-only). PyTorch is the only dependency for the actual model math.
+self-contained **family packages** — currently **qwen2 · qwen3 · gemma2 · gemma3 ·
+qwen3_5** (the last covering **Qwen3.5 / Qwen3.6**: a hybrid Gated-DeltaNet +
+gated-attention decoder, with an optional MTP speculative head), from HF safetensors
+**and** GGUF (qwen3_5 is safetensors-only). PyTorch is the only dependency for the
+actual model math.
 
 ## Vision
 
@@ -16,9 +17,9 @@ decoder, with an optional MTP speculative head), from HF safetensors **and** GGU
    norms, RoPE, the generate loop) depends on **PyTorch alone** — no `transformers`
    modeling, no `llama.cpp`. We parse GGUF and dequantize ourselves (numpy) and build
    each architecture from `nn.Module` primitives. (`huggingface_hub` only *downloads*
-   files — that's fine, it never touches the forward pass.) **Known wart:** the
-   safetensors path still leans on `transformers.AutoTokenizer` for tokenization; we
-   plan to drop that dependency later (the GGUF path already tokenizes on its own).
+   files — it never touches the forward pass.) **Known wart:** the safetensors path
+   still leans on `transformers.AutoTokenizer` for tokenization; we plan to drop that
+   later (the GGUF path already tokenizes on its own).
 3. **Hard-fail, never guess.** When something is unknown or unverified — a missing
    `model_type`, an unmapped weight name, an unconfirmed GGUF key — we **raise loudly**
    instead of falling back to a plausible default. A crash tells us exactly what to
@@ -26,108 +27,62 @@ decoder, with an optional MTP speculative head), from HF safetensors **and** GGU
 4. **Readable over optimized.** Prefer the clear implementation to the fast one.
    Duplication across families is intentional; each architecture reads on its own.
    We optimize only when it doesn't cost clarity (e.g. streaming weight load).
-5. **Validate against transformers.** We prove each implementation against
-   `transformers` `AutoModelForCausalLM` as the reference: `compare_logits.py` runs
-   our model and the reference on the same prompt and checks they predict the same
-   next token (same argmax + cosine ≈ 1). **If you use this repo, run
-   `compare_logits.py` to validate any model/architecture before trusting its
-   output** — it's how we catch a wrong RoPE, norm, or weight map.
+5. **Validate against transformers.** Prove each implementation against `transformers`
+   as the reference: `compare_logits.py` runs our model and the reference on the same
+   prompt and checks they predict the same next token (same argmax + cosine ≈ 1).
+   **Run it before trusting any model's output** — it's how we catch a wrong RoPE,
+   norm, or weight map.
+
+## Approach
+
+```
+spec ─► loader (raw config + weights by file names + tokenizer)
+     ─► router (model_type → family)
+     ─► <family>.load(raw_config, weights, fmt)   ← family builds the model + maps its own weight names
+     ─► shared generate loop (calls model.forward(ids, past)) ─► text
+```
+
+- **Loader is dumb** — never renames tensors; the **family owns the name map**.
+- **Router only routes** — `model_type` → family; unknown → raises.
+- **The loop is shared** — families provide `forward(ids, past) → (logits, past)`.
+- **Each family is self-contained** — its own RoPE / norm / attention / MLP; imports
+  only its siblings + the shared registry, never another family.
+
+Full layout, the diagram, and the verification setup live in
+**[docs/architecture.md](docs/architecture.md)**; the family coding pattern (file
+roles, numbered-step `forward`) is in **[CONVENTIONS.md](CONVENTIONS.md)**. `qwen2/`
+is the reference to copy.
 
 ## Install
 
-Dependencies live in `pyproject.toml`. Use a **virtual environment** so this stays
-isolated from your system Python.
+Dependencies live in `pyproject.toml`. Use a **virtual environment**.
 
 ```bash
 # 1. create + activate a venv (Python ≥ 3.10)
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 
-# 2. install the project (reads dependencies from pyproject.toml)
+# 2. install torch for YOUR backend first (see docs/setup.md), then the project
+pip install torch                 # macOS/MPS default; CUDA/ROCm/CPU → docs/setup.md
 pip install -e .                  # editable: src/ changes take effect immediately
-
-# (when you're done) deactivate
 ```
 
-`pip install -e .` pulls in torch, numpy, safetensors, transformers,
-huggingface_hub, regex, and jinja2 (the floors pinned in `pyproject.toml`) and exposes
-two console scripts — `lollm` (run) and `compare` (parity gate). The `python src/...`
-commands below work the same; the scripts are just shortcuts.
+`pip install -e .` pulls in torch, numpy, safetensors, transformers, huggingface_hub,
+regex, and jinja2 (floors pinned in `pyproject.toml`) and exposes two console scripts
+— `lollm` (run) and `compare` (parity gate). For an exact, reproducible environment,
+freeze: `pip freeze > requirements.lock`.
 
-> **Note:** `pyproject.toml` pins dependency *floors* known to work. For an exact,
-> reproducible environment, freeze your versions: `pip freeze > requirements.lock`.
+> **Backend, tested models, and the per-GPU torch wheel matrix:**
+> see **[docs/setup.md](docs/setup.md)**. Validated on Apple Silicon (MPS) and NVIDIA
+> (CUDA); CPU runs the parity gate; ROCm should work but isn't verified.
 
-### Hardware / backend
-
-> ✅ **Validated on Apple Silicon (Mac M-series, MPS) and NVIDIA (CUDA).** Parity also
-> runs on **CPU** (the `compare_logits` gate is fp32 on CPU). **ROCm** is written
-> against the generic `torch`/`nn` API and *should* work (it presents as `cuda`) but
-> isn't verified yet.
-
-#### Tested models
-
-End-to-end (load → generate → `compare_logits` parity vs `transformers`) on both Mac
-(MPS) and CUDA:
-
-| family | model | notes |
-|---|---|---|
-| `qwen2`   | `Qwen/Qwen2.5-0.5B-Instruct` | dense |
-| `qwen3`   | `Qwen/Qwen3-0.6B`            | QK-norm, no bias |
-| `gemma2`  | `google/gemma-2-2b-it`      | sandwich norm, sliding window, soft-caps (gated repo) |
-| `qwen3_5` | `Qwen/Qwen3.5-4B`           | hybrid GDN + gated attention; parity cosine ≈ 1 |
-| `qwen3_5` | `Qwen/Qwen3.6-27B`          | same family (untied `lm_head`, larger); runs on CUDA |
-
-`sanity_test.py` runs the parity gate across the small models in one shot:
-`python src/sanity_test.py` (or `--only qwen3_5`).
-
-The PyTorch **version** (`torch>=2.2`) and the **backend** (CPU / CUDA / ROCm / MPS)
-are separate: the version is pinned here, but the backend is chosen at *install time*
-by which wheel index you pull from — `pyproject.toml` can't pick it for you (there's
-no way to detect a GPU from a dependency spec). So install `torch` first for your
-hardware, then `pip install -e .` (which leaves your chosen build in place):
-
-```bash
-# macOS / Apple Silicon — the default wheel already includes CPU + MPS (the tested path)
-pip install torch
-
-# NVIDIA (CUDA) — pick the tag matching your driver; see the selector linked below
-pip install torch --index-url https://download.pytorch.org/whl/cu126
-
-# AMD (ROCm, Linux) — exposes the device as "cuda" in code
-pip install torch --index-url https://download.pytorch.org/whl/rocm7.1
-
-# CPU-only (any OS)
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-pip install -e .                  # then the rest of the deps
-```
-
-Compute tags (`cu126`, `cu128`, `rocm7.1`, …) change over time — the official
-[PyTorch Get Started selector](https://pytorch.org/get-started/locally/) always
-generates the current command for your OS + CUDA version. (For a locked, per-backend
-setup, [uv](https://docs.astral.sh/uv/guides/integration/pytorch/) can declare the
-torch index in `pyproject.toml` with platform markers.)
-
-**Verify what you got.** `run.py` auto-detects the device (cuda → mps → cpu) and the
-matching dtype, so check it landed where you expect:
-
-```python
-import torch
-print(torch.__version__)                  # the +cuXYZ / +cpu suffix tells you the backend
-print(torch.backends.mps.is_available())  # Apple Metal (the validated path)
-print(torch.cuda.is_available())          # NVIDIA / ROCm
-```
-
-`run.py` already maps each backend to its fast dtype — **bfloat16** on CUDA,
-**float16** on MPS, **float32** on CPU — so once the right wheel is installed the
-engine adapts automatically.
-
-## Quickstart
+## Running
 
 ```bash
 # safetensors (HF repo / local dir)
 python src/run.py --model Qwen/Qwen2.5-0.5B-Instruct --prompt "Explain RoPE in one line."
 python src/run.py --model ./local/qwen2/dir --prompt "Hi" --temperature 0   # greedy
+python src/run.py --model google/gemma-3-1b-it --prompt "Explain RoPE in one line."  # gemma3 (gated)
 
 # Qwen3.5 / Qwen3.6 (hybrid GDN family)
 python src/run.py --model Qwen/Qwen3.5-4B  --prompt "What is coffee"          # direct answer
@@ -140,98 +95,35 @@ python src/run.py --model ./qwen2.5-0.5b-instruct-q4_k_m.gguf   --prompt "Hi"
 
 # parity gate — one model, or all families at once
 python src/compare_logits.py --model Qwen/Qwen2.5-0.5B-Instruct
-python src/sanity_test.py                                                     # qwen2/qwen3/qwen3_5/gemma2
+python src/sanity_test.py                                  # qwen2/qwen3/qwen3_5/gemma2/gemma3
 ```
-
-## Design at a glance
-
-![Inference engine vision: spec + prompt → loader (config · weights · tokenizer) → probe model_type → route to family → shared generate loop → text](docs/inference-engine-vision.svg)
-
-## Layout
-
-```
-src/
-├── loader.py         # SHARED: fetch (HF/cache/gguf) → raw config + weights (file names) + tokenizer
-├── router.py         # SHARED: probe model_type → route to model (fail loud)
-├── generate.py       # SHARED: the one loop (prefill → decode → stop) + sampler
-├── gguf_reader.py    # SHARED: parse GGUF (metadata + tensor table + raw bytes)
-├── dequant.py        # SHARED: dequantize GGUF blocks (Q4_K, Q6_K, Q5_0, …)
-├── tokenization.py   # SHARED: uniform tokenizer — HFTokenizer + GGUFTokenizer (embedded BPE)
-├── progress.py       # SHARED: load-phase progress bar (caller-driven; model code stays UI-free)
-├── models.py         # registry: Family record + register/get; imports each family (e.g. `import qwen2`)
-├── run.py            # CLI: loader → router → model.load → generate (+ --think, --mtp)
-├── compare_logits.py # parity gate vs transformers (reusable compare())
-├── sanity_test.py    # run the parity gate across all families in one go
-└── qwen2/                       # one self-contained family package
-    ├── __init__.py              # manifest: MODEL_TYPES · DEFAULTS · register(load)
-    ├── config.py                # Qwen2Config — parse config.json (hf) / metadata (gguf)
-    ├── blocks.py                # small components: RMSNorm · RoPE · attention · MLP
-    ├── modeling_qwen2.py        # architecture: DecoderLayer + Qwen2Model + forward
-    ├── kv.py                    # the family KV cache (methods, not inline) — swappable later
-    └── weights.py               # the weight-name seam (maps) + load (checkpoint → model)
-```
-
-The `qwen3_5/` package adds `blocks.py` (Gated DeltaNet + gated attention), `mtp.py`
-(the optional speculative head), and a hybrid `kv.py` (growing KV for full layers +
-fixed `(conv, recurrent)` slots for linear layers).
-
-A family package imports only its own siblings (`config`, `blocks`) + the shared
-registry — never another family. Adding a model = drop a `<family>/` package + add
-`import <family>` to `models.py`.
-
-See **[CONVENTIONS.md](./CONVENTIONS.md)** for the family pattern we follow (file
-roles, the self-containment rule, and the numbered-step `forward` narration) so
-every architecture reads the same way. `qwen2/` is the reference to copy.
-
-## The flow
-
-```
-spec ─► loader (raw config + weights by file names + tokenizer)
-     ─► router (model_type → qwen2 family)
-     ─► qwen2.load(raw_config, weights, fmt)   ← family builds the model + maps its own weight names
-     ─► shared generate loop (calls model.forward(ids, past)) ─► text
-```
-
-## Design (per the vision)
-
-- **Loader is dumb.** It never renames tensors — weights come keyed by the file's
-  own names + a `fmt` tag. The **family owns the name map** (`qwen2/weights.py`), which
-  is where format quirks live.
-- **Router only routes.** `model_type` → family; unknown → raises.
-- **The loop is shared.** Families provide `forward(ids, past) → (logits, past)`,
-  never their own loop.
-- **The family is self-contained.** `modeling_qwen2.py` has its *own* RoPE / RMSNorm
-  / attention / MLP — it imports only its siblings (`config`, `blocks`) and the
-  shared registry, never another family. Duplication across families is intentional
-  (study clarity).
 
 ## Status
 
-✅ **qwen2** · ✅ **qwen3** (+ QK-norm, no bias) — both from safetensors **and** GGUF.
-✅ **gemma2** from safetensors; 🚧 **gemma2 GGUF** *hard-fails by design* — its
-Gemma2-specific metadata keys (attn scale, soft-caps, sliding window) aren't yet
-validated against llama.cpp, so per the vision we raise rather than guess (see
-`gemma2/config.py::from_gguf`).
-✅ **qwen3_5** (Qwen3.5-4B / Qwen3.6-27B) — hybrid **3 Gated-DeltaNet : 1 gated-attention**
-decoder, partial RoPE (mRoPE→text), four-projection GDN with chunked+recurrent delta-rule
-and a fixed-size `(conv, recurrent)` cache; safetensors-only (GDN GGUF isn't standardized).
-Optional **MTP** speculative head (`run.py --mtp`) and **thinking** toggle (`--think`).
-Shared loader/router/streaming-loop · GGUF parse + dequant (Q4_K/Q5_K/Q6_K/Q5_0/…) ·
-uniform tokenizer (BPE + SentencePiece) · streaming weight load (peak ≈ steady) with a
-load progress bar · cache-aware download skip (`dry_run`) · per-family `kv.py` cache · parity gate.
-⬜ next families (`llama/`, `gemma3/`, `qwen3_5_moe` — same hybrid backbone + sparse MoE MLP).
-⬜ GGUF MoE (stacked experts).
+| family | safetensors | GGUF | notes |
+|---|---|---|---|
+| `qwen2`        | ✅ | ✅ | dense |
+| `qwen3`        | ✅ | ✅ | QK-norm, no bias |
+| `gemma2`       | ✅ | 🚧 hard-fail | sandwich norm, sliding window, soft-caps |
+| `gemma3`       | ✅ | 🚧 hard-fail | QK-norm (replaces soft-caps), 5:1 local/global dual RoPE |
+| `qwen3_5`      | ✅ | — | hybrid GDN + gated attention; MTP head, `--think` toggle |
+| `qwen3_5_moe`  | ✅ | — | same backbone + sparse MoE FFN (fused experts) |
 
-> **gemma2 parity:** Gemma2 uses attention logit soft-capping, which standard SDPA
-> skips. To compare, load the reference with eager attention:
-> `AutoModelForCausalLM.from_pretrained(..., attn_implementation="eager")`.
+✅ = parity-verified vs `transformers` (same top token, cosine ≈ 1). 🚧 **GGUF
+hard-fails by design** for the gemma families: their arch-specific metadata keys
+aren't validated against llama.cpp yet, so per "hard-fail, never guess" we raise
+rather than default (see each family's `config.py::from_gguf`).
 
-## Verified
+Shared infra: loader/router/streaming generate loop · GGUF parse + dequant
+(Q4_K/Q5_K/Q6_K/Q5_0/…) · uniform tokenizer (BPE + SentencePiece) · streaming weight
+load (peak ≈ steady) with a progress bar · cache-aware download skip · per-family
+`kv.py` cache · the `compare_logits` / `sanity_test` parity gate.
 
-Run **end-to-end** (load → generate → `compare_logits` parity vs `transformers`) on
-the [tested models](#tested-models) above, on **Mac (MPS)** and **CUDA** — e.g.
-Qwen3.5-4B matches the reference at cosine ≈ 1 (same top token), and Qwen3.6-27B runs
-on CUDA. Plus: registry/router dispatch (unknown `model_type` raises), `weights.to_raw`
-maps, sampling precedence, and the qwen3_5 self-tests (`src/qwen3_5_selftest.py`:
-conv causality, recurrent==chunked delta-rule, prefill==incremental decode, MTP shapes).
-`compare_logits.py` / `sanity_test.py` remain the gate to re-run for any new model.
+## TODO
+
+- ⬜ **gemma4** family — Gemma3 + Per-Layer Embeddings + shared-KV + proportional/
+  asymmetric global head + vision/audio encoders (spec: `docs/gemma4-architecture.md`).
+- ⬜ **llama** family.
+- ⬜ **GGUF MoE** (stacked experts) — and validate gemma2/gemma3 GGUF metadata keys
+  against llama.cpp to lift the hard-fail.
+- ⬜ Drop the `transformers.AutoTokenizer` dependency on the safetensors path.

@@ -36,5 +36,6 @@ def get(model_type: str) -> "Family":
 import qwen2     # noqa: E402,F401
 import qwen3     # noqa: E402,F401
 import gemma2    # noqa: E402,F401
+import gemma3    # noqa: E402,F401
 import qwen3_5   # noqa: E402,F401
 import qwen3_5_moe  # noqa: E402,F401

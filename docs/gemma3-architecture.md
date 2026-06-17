@@ -20,8 +20,8 @@
 | Attn scale | `1/√head_dim` | **`query_pre_attn_scalar^-0.5`** | 1 (block) |
 | Soft-capping | none | none (Gemma**2** had it; **Gemma3 dropped it for QK-norm**) | — |
 | MLP | SwiGLU (`silu`) | **GeGLU** (`gelu_pytorch_tanh`) | 1 (block) |
-| Attention span | full causal, every layer | **5 local : 1 global** (sliding window vs full) | 3 (mask + per-layer) |
-| RoPE θ | single (1e6) | **dual**: 10k local, 1e6 global (+ scale 8 global) | 3 (per-layer RoPE) |
+| Attention span | full causal, every layer | **5 local : 1 global** (sliding window vs full); window is **size-dependent**: **512** on 1B, 1024 on 4B+ | 3 (mask + per-layer) |
+| RoPE θ | single (1e6) | **dual**: 10k local, 1e6 global. Long-context **scale (factor 8) only on the 4B+** models; the **1B uses no scaling** (both `rope_type: default`) | 3 (per-layer RoPE) |
 | Embeddings | as-is | **× √hidden_size** before layer 0 | 2 (forward) |
 | Output head | separate or tied | **tied** to embeddings | 0 (we handle) |
 
@@ -97,12 +97,15 @@ x = embed_tokens(ids) * (hidden_size ** 0.5)
 
 This is the real work and the reason `build_model` is guarded:
 
-- **5 local : 1 global** — five layers use **sliding-window** attention (window
-  ~1024), then one layer uses **full** global attention, repeating. Each layer must
-  know its type (by index).
-- **Dual RoPE** — local layers use `θ = 10,000`; global layers use `θ = 1,000,000`
-  with an additional RoPE **scale factor of 8** (for long context). Build **two**
-  RoPE tables once and pick per layer.
+- **5 local : 1 global** — controlled by `sliding_window_pattern` (default 6): layer
+  `i` is **global** when `(i+1) % pattern == 0` (so on the 1B's 26 layers, the global
+  layers are 5/11/17/23 — note the **last layer is NOT forced global**; that forcing
+  is a *Gemma4* change). The window is **size-dependent: 512 on the 1B**, 1024 on 4B+.
+- **Dual RoPE** — local layers use `θ = 10,000`; global layers use `θ = 1,000,000`.
+  The long-context **scale factor of 8 applies only to the 4B+ models** (128K context);
+  the **1B (32K) uses `rope_type: default` with no scaling**. Build **two** RoPE
+  tables once and pick per layer. (Verified against `gemma-3-1b-it/config.json`:
+  `rope_parameters.{full,sliding}_attention.rope_theta = 1e6 / 1e4`, no `factor`.)
 - **Masking** — our attention uses `scaled_dot_product_attention(is_causal=True)`,
   which is *full* causal only. Local layers need an explicit **band mask** (each
   query attends only to the last `window` keys). Global layers keep `is_causal`.
@@ -136,25 +139,58 @@ would be *missing* — which the strict safeguard would catch at load (good).
 
 ---
 
-## Map to our design
+## Map to our design — `src/gemma3/` (what we actually built)
 
-A real `archs/create_gemma3.py` is a **level 2–3 plugin**:
+Implemented as a standard family package (copy `gemma2/`, apply the diffs):
 
-- **blocks** (`layers`-style, defined in the plugin file): `GemmaRMSNorm`,
-  `GemmaMLP`, `GemmaAttention` (QK-norm + custom scale).
-- **layer**: `GemmaDecoderLayer` (sandwich norm + carries local/global type).
-- **model**: a thin `CausalLM` subclass overriding `forward` (embedding scale) and
-  building two RoPE tables; `build_model` wires it.
-- **config**: read `query_pre_attn_scalar`, `sliding_window`, `sliding_window_pattern`,
-  `rope_local_base_freq`, `rope_theta` into `cfg.extra`.
-- **name map**: extend the dense map with `q_norm`, `k_norm`,
-  `pre/post_feedforward_layernorm`.
-- **validate**: `compare_logits` vs transformers — non-negotiable for an arch this
-  different.
+- **config.py** — `Gemma3Config.from_hf` (reads `text_config` if nested): surfaces
+  `query_pre_attn_scalar`, `sliding_window`, `sliding_window_pattern`, dual RoPE
+  thetas (`rope_parameters.{full,sliding}_attention.rope_theta`, with flat-key
+  fallback `rope_theta` / `rope_local_base_freq`), and an optional global
+  `rope_scaling_factor` (1.0 on the 1B). Asserts soft-caps are absent (Gemma3 uses
+  QK-norm instead) — fail loud if a checkpoint sets them. `from_gguf` **hard-fails**
+  (unverified keys), per the engine's "never guess" rule.
+- **blocks.py** — `GemmaRMSNorm (1+w)`, GeGLU MLP, `GemmaAttention` with **q_norm/
+  k_norm** (RMSNorm over head_dim, before RoPE), scale `query_pre_attn_scalar**-0.5`,
+  manual sliding-window mask, **no soft-cap**. `RoPE` takes a `scaling_factor`.
+- **modeling_gemma3.py** — `DecoderLayer` (sandwich norm, carries `is_global`);
+  `Gemma3Model` builds **two RoPE tables** (local/global) and threads the right one
+  per layer; `forward` does embed×√hidden → per-layer-type RoPE → stack → norm →
+  tied head, numbered-step narrated.
+- **kv.py** — `Gemma3Cache` (same shape as gemma2; local layers cache full K/V,
+  window lives in the mask).
+- **weights.py** — HF names mirror the model → **identity map** (incl. `q_norm`/
+  `k_norm`, `pre/post_feedforward_layernorm`); streams to device; ties
+  `lm_head ← model.embed_tokens`. (1B is text-only `Gemma3ForCausalLM` → top-level
+  `model.*` keys; the 4B+ multimodal wrapper nests under `model.language_model.*` —
+  that map comes with the vision tower later.)
+- **\_\_init\_\_.py** — `MODEL_TYPES = ["gemma3", "gemma3_text"]`, Gemma sampling
+  defaults, `register(load)`. **models.py** — `import gemma3`.
 
-This is the case the "override at any level" design exists for: Gemma3 reaches into
-blocks, layer wiring, forward, RoPE, and masking — yet it's still one plugin file,
-and the engine, backends, and generation loop don't change.
+### Parity status
+
+Code reviewed line-by-line against `transformers` `modeling_gemma3.py` (RMSNorm,
+QK-norm placement, dual RoPE, scale, sandwich wiring, tie all match). The numeric
+gate must run where the **gated** checkpoint + torch are available:
+
+```bash
+huggingface-cli login                 # accept the gemma-3 license once
+python src/compare_logits.py --model google/gemma-3-1b-it
+# expect: same top token, cosine > 0.9999  → PASS ✅
+```
+
+> Gemma3 has **no** attention soft-cap, so unlike Gemma2 the reference does **not**
+> need `attn_implementation="eager"` for parity — but using eager is still the
+> safest apples-to-apples comparison.
+
+### Lessons carried to Gemma4
+
+- **Last-layer-forced-global is Gemma4-only** — Gemma3's pattern leaves the last
+  layer wherever the 5:1 cycle lands (1B: sliding).
+- **RoPE scaling is size/context-dependent** — don't bake factor 8 in; read it
+  (absent on short-context models). Gemma4 E2B (128K) will differ again.
+- **QK-norm replaced soft-caps** — Gemma4 keeps QK-norm; the soft-cap code path
+  stays retired.
 
 ---
 

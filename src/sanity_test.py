@@ -26,7 +26,8 @@ MODELS = [
     ("qwen2",   "Qwen/Qwen2.5-0.5B-Instruct"),
     ("qwen3",   "Qwen/Qwen3-0.6B"),
     ("qwen3_5", "Qwen/Qwen3.5-4B"),
-    ("gemma2",  "google/gemma-2-2b-it")
+    ("gemma2",  "google/gemma-2-2b-it"),
+    ("gemma3",  "google/gemma-3-1b-it"),
 ]
 
 
