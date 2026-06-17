@@ -106,6 +106,7 @@ python src/sanity_test.py                                  # qwen2/qwen3/qwen3_5
 | `qwen3`        | ✅ | ✅ | QK-norm, no bias |
 | `gemma2`       | ✅ | 🚧 hard-fail | sandwich norm, sliding window, soft-caps |
 | `gemma3`       | ✅ | 🚧 hard-fail | QK-norm (replaces soft-caps), 5:1 local/global dual RoPE |
+| `gemma4`       | 🚧 text-only | 🚧 hard-fail | PLE + shared-KV + proportional global RoPE + double-wide MLP; **parity pending** (`google/gemma-4-e2b-it`); vision/audio towers not built |
 | `qwen3_5`      | ✅ | — | hybrid GDN + gated attention; MTP head, `--think` toggle |
 | `qwen3_5_moe`  | ✅ | — | same backbone + sparse MoE FFN (fused experts) |
 
@@ -123,8 +124,10 @@ load (peak ≈ steady) with a progress bar · cache-aware download skip · per-f
 
 ## TODO
 
-- ⬜ **gemma4** family — Gemma3 + Per-Layer Embeddings + shared-KV + proportional/
-  asymmetric global head + vision/audio encoders (spec: `docs/gemma4-architecture.md`).
+- 🚧 **gemma4** family — text decoder **implemented** (`src/gemma4/`: PLE, shared-KV,
+  proportional global RoPE, double-wide MLP, final soft-cap); **parity gate pending**
+  on `google/gemma-4-e2b-it`. Remaining: vision/audio towers (see
+  `docs/multimodal-processors.md`).
 - ⬜ **llama** family.
 - ⬜ **GGUF MoE** (stacked experts) — and validate gemma2/gemma3 GGUF metadata keys
   against llama.cpp to lift the hard-fail.

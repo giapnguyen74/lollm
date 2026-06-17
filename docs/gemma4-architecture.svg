@@ -1,0 +1,121 @@
+<svg viewBox="0 0 820 660" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, sans-serif" role="img">
+  <title>Gemma4 E2B decoder layer vs our Gemma3 layer</title>
+  <desc>A Gemma4 E2B decoder layer is a Gemma3 layer plus: Per-Layer Embeddings (a second embedding table that modulates the residual after attention and after the FFN), a shared KV cache on the top layers, and asymmetric global attention (larger global_head_dim with proportional RoPE) vs sliding-window local attention. Multimodal soft-tokens (vision ~150M, audio ~300M USM) replace placeholder tokens before PLE is computed. Blue = new vs Gemma3; grey = inherited unchanged.</desc>
+  <defs>
+    <marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6b7280"/></marker>
+    <marker id="ahb" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2563eb"/></marker>
+  </defs>
+  <rect x="0" y="0" width="820" height="660" fill="#ffffff"/>
+
+  <text x="30" y="28" font-size="14" fill="#111827" font-weight="600">Gemma4 E2B DecoderLayer (× 35, repeating 5 local : 1 global, last forced global)</text>
+  <text x="30" y="46" font-size="11" fill="#2563eb">blue = new vs Gemma3</text>
+  <text x="190" y="46" font-size="11" fill="#6b7280">· grey = inherited from Gemma3 (sandwich norm, QK-norm, GeGLU, ×√hidden, tied head). NB: RMSNorm became plain w·x̂ (was 1+w)</text>
+
+  <!-- PLE lane (left) -->
+  <rect x="18" y="156" width="96" height="432" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="66" y="372" text-anchor="middle" font-size="11.5" fill="#2563eb" font-weight="600" transform="rotate(-90 66 372)">Per-Layer Embedding table</text>
+  <text x="66" y="388" text-anchor="middle" font-size="9.5" fill="#6b7280" transform="rotate(-90 66 388)">(2nd table · dim 256 · per layer)</text>
+
+  <!-- preamble: embed + multimodal merge -->
+  <rect x="150" y="60" width="430" height="44" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="365" y="79" text-anchor="middle" font-size="11.5" fill="#111827">hidden = embed(ids) × √hidden_size   (grey: inherited)</text>
+  <text x="365" y="95" text-anchor="middle" font-size="11" fill="#2563eb">⊕ splice vision / audio soft-tokens into placeholder positions (new)</text>
+  <line x1="365" y1="104" x2="365" y2="116" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+  <!-- PLE is computed from token IDs before the merge -->
+  <polyline points="150,82 66,82 66,154" fill="none" stroke="#2563eb" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#ahb)"/>
+  <text x="66" y="128" text-anchor="middle" font-size="9" fill="#2563eb">from token IDs</text>
+  <text x="66" y="140" text-anchor="middle" font-size="9" fill="#2563eb">(before merge)</text>
+
+  <!-- input_layernorm -->
+  <rect x="235" y="116" width="260" height="28" rx="7" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="365" y="135" text-anchor="middle" font-size="12" fill="#6b7280">input_layernorm · RMSNorm (plain w·x̂)</text>
+  <line x1="365" y1="144" x2="365" y2="156" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- attention box -->
+  <rect x="235" y="156" width="260" height="134" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="365" y="173" text-anchor="middle" font-size="11.5" fill="#6b7280">q / k / v proj (no bias)</text>
+  <rect x="247" y="180" width="236" height="19" rx="5" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.1"/>
+  <text x="365" y="193" text-anchor="middle" font-size="10.5" fill="#6b7280">q_norm / k_norm — QK-norm (same)</text>
+  <rect x="247" y="202" width="236" height="19" rx="5" fill="#eff6ff" stroke="#2563eb" stroke-width="1.2"/>
+  <text x="365" y="215" text-anchor="middle" font-size="10" fill="#2563eb">RoPE — local θ10k · global p-RoPE θ1M (rotate 25%)</text>
+  <rect x="247" y="224" width="236" height="32" rx="5" fill="#eff6ff" stroke="#2563eb" stroke-width="1.2"/>
+  <text x="365" y="237" text-anchor="middle" font-size="10" fill="#2563eb">attn — local window 512 · global full</text>
+  <text x="365" y="250" text-anchor="middle" font-size="10" fill="#2563eb">global head_dim 512 · top layers share KV</text>
+  <text x="365" y="274" text-anchor="middle" font-size="11.5" fill="#6b7280">o_proj</text>
+  <line x1="365" y1="290" x2="365" y2="300" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- post_attention_layernorm -->
+  <rect x="235" y="300" width="260" height="28" rx="7" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="365" y="319" text-anchor="middle" font-size="12" fill="#6b7280">post_attention_layernorm (post)</text>
+  <line x1="365" y1="328" x2="365" y2="331" stroke="#6b7280" stroke-width="1.5"/>
+
+  <!-- add 1 -->
+  <circle cx="365" cy="344" r="13" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="365" y="349" text-anchor="middle" font-size="14" fill="#111827">+</text>
+  <line x1="365" y1="357" x2="365" y2="404" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- pre_feedforward_layernorm -->
+  <rect x="235" y="404" width="260" height="28" rx="7" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="365" y="423" text-anchor="middle" font-size="12" fill="#6b7280">pre_feedforward_layernorm (pre)</text>
+  <line x1="365" y1="432" x2="365" y2="444" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- mlp GeGLU -->
+  <rect x="235" y="444" width="260" height="40" rx="8" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="365" y="461" text-anchor="middle" font-size="12.5" fill="#6b7280">mlp · GeGLU</text>
+  <text x="365" y="476" text-anchor="middle" font-size="10.5" fill="#6b7280">down( gelu(gate)·up )</text>
+  <line x1="365" y1="484" x2="365" y2="496" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- post_feedforward_layernorm -->
+  <rect x="235" y="496" width="260" height="28" rx="7" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="365" y="515" text-anchor="middle" font-size="12" fill="#6b7280">post_feedforward_layernorm (post)</text>
+  <line x1="365" y1="524" x2="365" y2="527" stroke="#6b7280" stroke-width="1.5"/>
+
+  <!-- add 2 -->
+  <circle cx="365" cy="540" r="13" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="365" y="545" text-anchor="middle" font-size="14" fill="#111827">+</text>
+  <line x1="365" y1="553" x2="365" y2="562" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- PLE inject 2 -->
+  <rect x="235" y="562" width="260" height="26" rx="7" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="365" y="579" text-anchor="middle" font-size="11" fill="#2563eb">⊕ per-layer embedding (once per layer, after FFN)</text>
+  <line x1="235" y1="575" x2="114" y2="575" stroke="#2563eb" stroke-width="1.2" marker-start="url(#ahb)"/>
+  <line x1="365" y1="588" x2="365" y2="600" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- next -->
+  <rect x="235" y="600" width="260" height="30" rx="7" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="365" y="620" text-anchor="middle" font-size="12" fill="#111827">→ next layer</text>
+
+  <!-- residuals -->
+  <polyline points="365,114 207,114 207,344 352,344" fill="none" stroke="#6b7280" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+  <polyline points="365,398 197,398 197,540 352,540" fill="none" stroke="#6b7280" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+  <text x="180" y="300" font-size="10" fill="#6b7280" transform="rotate(-90 180 300)">residual</text>
+
+  <!-- side notes -->
+  <rect x="556" y="156" width="248" height="92" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.3"/>
+  <text x="568" y="175" font-size="11" fill="#2563eb" font-weight="600">Per-Layer Embeddings (PLE)</text>
+  <text x="568" y="192" font-size="9.5" fill="#6b7280">2nd embedding table → a small dim-256 vector</text>
+  <text x="568" y="205" font-size="9.5" fill="#6b7280">per token per layer, added to the residual after</text>
+  <text x="568" y="218" font-size="9.5" fill="#6b7280">attn &amp; FFN. Computed from token IDs first, so</text>
+  <text x="568" y="231" font-size="9.5" fill="#6b7280">multimodal positions use the pad id (neutral).</text>
+  <text x="568" y="244" font-size="9.5" fill="#6b7280">→ "effective" 2B; big table can live on CPU.</text>
+
+  <rect x="556" y="256" width="248" height="78" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.3"/>
+  <text x="568" y="275" font-size="11" fill="#2563eb" font-weight="600">Asymmetric local / global</text>
+  <text x="568" y="292" font-size="9.5" fill="#6b7280">Local: window 512, RoPE θ=10k.</text>
+  <text x="568" y="305" font-size="9.5" fill="#6b7280">Global: full causal, head_dim 512 (vs 256),</text>
+  <text x="568" y="318" font-size="9.5" fill="#6b7280">proportional RoPE (rotate 25%), θ=1M.</text>
+  <text x="568" y="331" font-size="9.5" fill="#6b7280">Last layer is always global.</text>
+  <line x1="556" y1="290" x2="495" y2="238" stroke="#2563eb" stroke-width="1.1" stroke-dasharray="4 3"/>
+
+  <rect x="556" y="342" width="248" height="62" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.3"/>
+  <text x="568" y="361" font-size="11" fill="#2563eb" font-weight="600">Shared KV cache</text>
+  <text x="568" y="378" font-size="9.5" fill="#6b7280">Top num_kv_shared_layers skip k/v proj and</text>
+  <text x="568" y="391" font-size="9.5" fill="#6b7280">reuse K/V from the last non-shared layer of the</text>
+  <text x="568" y="401" font-size="9.5" fill="#6b7280">same type. Efficiency only — logits unchanged.</text>
+
+  <rect x="556" y="412" width="248" height="60" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.3"/>
+  <text x="568" y="431" font-size="11" fill="#2563eb" font-weight="600">Multimodal (full scope)</text>
+  <text x="568" y="448" font-size="9.5" fill="#6b7280">Vision tower (~150M) + USM audio (~300M)</text>
+  <text x="568" y="461" font-size="9.5" fill="#6b7280">→ soft-tokens replacing &lt;image&gt;/&lt;audio&gt; ids.</text>
+  <line x1="556" y1="430" x2="580" y2="104" stroke="#2563eb" stroke-width="1.1" stroke-dasharray="4 3"/>
+</svg>

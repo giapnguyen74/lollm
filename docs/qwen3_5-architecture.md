@@ -7,6 +7,8 @@
 > called out under "Deltas to confirm." Nothing here is implemented yet; per the vision
 > we write the spec first, then port from the reference and gate with `compare_logits.py`.
 
+![Qwen3.5 hybrid decoder — Gated DeltaNet (linear) layer vs gated full-attention layer, the 3:1 schedule, the hybrid cache, and the MTP head](./qwen3_5-architecture.svg)
+
 ## TL;DR
 
 - **One family handles both.** `Qwen3.5-4B` and `Qwen3.6-27B` share

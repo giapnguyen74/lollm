@@ -13,6 +13,51 @@
 > **drops** the most exotic Gemma-3n pieces (**AltUp**, **LAuReL**), so E2B is
 > "Gemma3 + PLE + shared-KV + bigger global heads," not a from-scratch arch.
 
+![Gemma4 E2B decoder layer vs our Gemma3 layer](./gemma4-architecture.svg)
+
+---
+
+## As-built corrections (E2B, verified vs `transformers` `modeling_gemma4.py`)
+
+The early spec below was written from the blog + config-class defaults. Implementing
+`src/gemma4/` against the **real `google/gemma-4-e2b-it` config + the modeling source**
+surfaced several differences from Gemma3 that the prose further down hadn't captured —
+these are authoritative:
+
+- **RMSNorm changed.** Gemma4 uses **plain `w·x̂` with ONES init**, *not* Gemma2/3's
+  `(1+w)`. There's also a no-weight variant (`with_scale=False`) used for a new **v_norm**.
+- **Attention scale = 1.0.** `query_pre_attn_scalar` is gone; the QK-norm absorbs scaling.
+  (We pass `scale=1.0` to the shared attention core.)
+- **V-norm.** V is RMSNorm-normalized (no weight) before attention, alongside QK-norm.
+- **PLE injects ONCE per layer**, after the FFN residual (gate→gelu→×per-layer→proj→
+  norm→add) — not once after attention and once after FFN. (The SVG shows two for
+  emphasis; the code/reference does one.)
+- **Final logit soft-cap is back: 30.0** (Gemma3 had none). No *attention* soft-cap.
+- **Double-wide MLP** (`use_double_wide_mlp`) applies **only to the shared-KV layers**
+  (2× intermediate); non-shared layers use the normal width.
+- **E2B real dims:** 35 layers, hidden 1536, intermediate 6144, 8 heads, **1 KV head**
+  (MQA), head_dim **256 local / 512 global**, `num_kv_shared_layers=20`,
+  `layer_types` period 5 (full at indices 4,9,…,34; last = full), vocab 262144,
+  PLE dim 256.
+- **Shared-KV donors:** the last non-shared layer of each type (sliding=13, full=14)
+  store full K/V; layers 15–34 reuse it (no k/v projections on those layers).
+
+### Parity status
+
+Text decoder implemented in `src/gemma4/` and offline-checked
+(`python src/gemma4_selftest.py`: prefill==decode with shared-KV, donor/shared
+structure, double-wide MLP, proportional-RoPE width, final soft-cap, shape). The
+numeric gate runs where the gated checkpoint + torch are available:
+
+```bash
+huggingface-cli login
+python src/compare_logits.py --model google/gemma-4-e2b-it   # text-only; expect cosine ≈ 1
+```
+
+> Top parity suspects if it diverges: the **proportional RoPE** (only the first
+> `partial·head_dim/2` pairs rotate, rest zero-padded), the **PLE combine**
+> (`(norm(proj·hidden^-½) + scaled_id) · 2^-½`), and **scale=1.0** (not `head_dim^-½`).
+
 ---
 
 ## Summary — what changes vs Gemma3
@@ -151,6 +196,11 @@ the last `window=512` keys); global layers stay `is_causal`.
 Gemma4 is a `Gemma4ForConditionalGeneration`: a text decoder plus a **vision tower**
 and (on E2B) an **audio tower**, whose outputs are projected to `hidden_size`
 **soft-tokens** that replace placeholder IDs in the input sequence.
+
+> The *input* side — how raw images/audio become the tensors these towers consume
+> (decode → normalize → patchify / log-mel), what's standardized, and how a processor
+> seam would fit lollm — is written up separately in
+> **[multimodal-processors.md](./multimodal-processors.md)**.
 
 ### Vision encoder (~150M on E2B)  *(new tower)*
 
