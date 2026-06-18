@@ -1,3 +1,5 @@
+<img src="docs/lollm-logo.svg" alt="lollm — learn only LLM" height="72">
+
 # lollm — a study-first LLM inference engine
 
 A small, readable inference engine for **studying how LLMs (and related models) run
