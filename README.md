@@ -5,10 +5,35 @@
 A small, readable inference engine for **studying how LLMs (and related models) run
 inference**. A thin **loader + router**, a shared **generate loop**, and
 self-contained **family packages** — currently **qwen2 · qwen3 · gemma2 · gemma3 ·
-qwen3_5** (the last covering **Qwen3.5 / Qwen3.6**: a hybrid Gated-DeltaNet +
-gated-attention decoder, with an optional MTP speculative head), from HF safetensors
-**and** GGUF (qwen3_5 is safetensors-only). PyTorch is the only dependency for the
-actual model math.
+gemma4 · qwen3_5** (gemma4 is the **Gemma 4 E2B** text decoder — Per-Layer Embeddings,
+shared-KV, proportional RoPE; qwen3_5 covers **Qwen3.5 / Qwen3.6**, a hybrid
+Gated-DeltaNet + gated-attention decoder with an optional MTP speculative head), from HF
+safetensors **and** GGUF (qwen3_5 and gemma4 are safetensors-only). PyTorch is the only
+dependency for the actual model math.
+
+## Status
+
+| family | safetensors | GGUF | notes |
+|---|---|---|---|
+| `qwen2`        | ✅ | ✅ | dense |
+| `qwen3`        | ✅ | ✅ | QK-norm, no bias |
+| `gemma2`       | ✅ | 🚧 hard-fail | sandwich norm, sliding window, soft-caps |
+| `gemma3`       | ✅ | 🚧 hard-fail | QK-norm (replaces soft-caps), 5:1 local/global dual RoPE |
+| `gemma4`       | ✅ text-only | 🚧 hard-fail | PLE + shared-KV + proportional global RoPE + double-wide MLP + per-layer residual scale; **parity ✅** on `google/gemma-4-e2b-it` (cosine ≈ 1); vision/audio towers not built |
+| `qwen3_5`      | ✅ | — | hybrid GDN + gated attention; MTP head, `--think` toggle |
+| `qwen3_5_moe`  | ✅ | — | same backbone + sparse MoE FFN (fused experts) |
+
+✅ = parity-verified vs `transformers` (same top token, cosine ≈ 1). 🚧 **GGUF
+hard-fails by design** for the gemma families: their arch-specific metadata keys
+aren't validated against llama.cpp yet, so per "hard-fail, never guess" we raise
+rather than default (see each family's `config.py::from_gguf`).
+
+Shared infra: loader/router/streaming generate loop · GGUF parse + dequant
+(Q4_K/Q5_K/Q6_K/Q5_0/…) · uniform tokenizer (BPE + SentencePiece) · streaming weight
+load (peak ≈ steady) with a progress bar · cache-aware download skip · per-family
+`kv.py` cache · an optional Triton flash-attention kernel (CUDA, opt-in via
+`LOLLM_ATTN`; torch SDPA is the default/validated path) · the `compare_logits` /
+`sanity_test` parity gate plus offline family self-tests (e.g. `gemma3_selftest.py`).
 
 ## Vision
 
@@ -100,40 +125,14 @@ python src/compare_logits.py --model Qwen/Qwen2.5-0.5B-Instruct
 python src/sanity_test.py                                  # qwen2/qwen3/qwen3_5/gemma2/gemma3
 ```
 
-## Status
+## TODO & roadmap
 
-| family | safetensors | GGUF | notes |
-|---|---|---|---|
-| `qwen2`        | ✅ | ✅ | dense |
-| `qwen3`        | ✅ | ✅ | QK-norm, no bias |
-| `gemma2`       | ✅ | 🚧 hard-fail | sandwich norm, sliding window, soft-caps |
-| `gemma3`       | ✅ | 🚧 hard-fail | QK-norm (replaces soft-caps), 5:1 local/global dual RoPE |
-| `gemma4`       | ✅ text-only | 🚧 hard-fail | PLE + shared-KV + proportional global RoPE + double-wide MLP + per-layer residual scale; **parity ✅** on `google/gemma-4-e2b-it` (cosine ≈ 1); vision/audio towers not built |
-| `qwen3_5`      | ✅ | — | hybrid GDN + gated attention; MTP head, `--think` toggle |
-| `qwen3_5_moe`  | ✅ | — | same backbone + sparse MoE FFN (fused experts) |
+Tracking lives in two files:
 
-✅ = parity-verified vs `transformers` (same top token, cosine ≈ 1). 🚧 **GGUF
-hard-fails by design** for the gemma families: their arch-specific metadata keys
-aren't validated against llama.cpp yet, so per "hard-fail, never guess" we raise
-rather than default (see each family's `config.py::from_gguf`).
+- **[docs/TODOS.md](docs/TODOS.md)** — near-term, scoped work we intend to fix soon
+  (with an index table on top; stable `T-#` ids).
+- **[docs/ROADMAP.md](docs/ROADMAP.md)** — bigger, untimed directions & standing problems
+  (e.g. gemma4 vision/audio towers, `llama`, GGUF MoE, dropping `AutoTokenizer`,
+  perf cliffs; stable `R-#` ids).
 
-Shared infra: loader/router/streaming generate loop · GGUF parse + dequant
-(Q4_K/Q5_K/Q6_K/Q5_0/…) · uniform tokenizer (BPE + SentencePiece) · streaming weight
-load (peak ≈ steady) with a progress bar · cache-aware download skip · per-family
-`kv.py` cache · an optional Triton flash-attention kernel (CUDA, opt-in via
-`LOLLM_ATTN`; torch SDPA is the default/validated path) · the `compare_logits` /
-`sanity_test` parity gate plus offline family self-tests (e.g. `gemma3_selftest.py`).
-
-## TODO
-
-- ✅ **gemma4** text decoder (`src/gemma4/`: PLE, shared-KV, proportional global RoPE,
-  double-wide MLP, per-layer residual scale, final soft-cap) — **parity ✅** on
-  `google/gemma-4-e2b-it`. Remaining: vision/audio towers (see
-  `docs/multimodal-processors.md`).
-- ⬜ **llama** family.
-- ⬜ **GGUF MoE** (stacked experts) — and validate gemma2/gemma3 GGUF metadata keys
-  against llama.cpp to lift the hard-fail.
-- ⬜ Drop the `transformers.AutoTokenizer` dependency on the safetensors path.
-
-See **[docs/ISSUES.md](docs/ISSUES.md)** for the reviewed backlog (fp16-on-MPS Gemma
-risk, KV-cache/perf cliffs, etc.).
+Resolved gotchas are written up as lessons in **[docs/LESSONS.md](docs/LESSONS.md)**.

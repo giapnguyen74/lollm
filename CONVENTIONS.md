@@ -94,107 +94,13 @@ Keep shape annotations inline where they help (`(B, T) -> (B, T, H)`).
 
 ---
 
-## 4b. Lesson: converted weights aren't in the original convention
+## 4b. Gotchas & lessons → see [docs/LESSONS.md](docs/LESSONS.md)
 
-**Do not assume "GGUF weights == HF weights, just quantized."** Converters *fold
-runtime conventions into the weights* (constant folding), so a faithful loader must
-know each format's per-arch quirks and undo them in `weights.py`. This is real and
-has bitten us:
-
-| Quirk | What the converter did | What the loader must do |
-|---|---|---|
-| **Gemma RMSNorm `+1`** | Gemma's norm is `(1+w)·x̂`; llama.cpp bakes `+1` into the stored norm weights so its plain `w·x̂` kernel works | on GGUF, **subtract 1** from every `*norm.weight` (else every norm is off by 1 → garbage) |
-| **Llama Q/K permute** | llama.cpp permutes Q/K weights for its RoPE layout | un-permute Q/K on the GGUF path (Qwen2 isn't permuted → nothing to do) |
-| **Tied embeddings** | `output.weight` omitted when tied | fill `lm_head` from `embed_tokens` |
-
-Why converters do this: the runtime keeps **one generic kernel** (e.g. a single
-RMSNorm, a single RoPE) and pushes the architectural constant into the weights at
-conversion. The technique is everywhere (BatchNorm folding, scale folding, …) — but
-it means on-disk weights encode runtime assumptions you have to reverse.
-
-**How to catch it:** when a GGUF model outputs garbage but encode/decode are fine,
-compare the GGUF-dequantized weights to the safetensors weights **per tensor by
-cosine**. An *unquantized* (F32) tensor with cosine ≪ 1 (e.g. a norm at 0.70) is the
-tell — that's a folded convention, not quantization error. Fix it in `weights.py`,
-not in `modeling`.
-
----
-
-## 4c. Lesson: loading doubles memory unless you free the source
-
-On Apple **MPS** (and CUDA), `model.to(device)` makes a **separate allocation** — a
-PyTorch MPS/Metal tensor is a distinct buffer from the CPU tensor it came from, even
-though Apple's memory is "unified." So you transiently hold **both** the CPU source
-and the device copy. Two further traps inflate it:
-
-- **Default fp32 params.** `nn.Linear`/`nn.Embedding` create fp32 params, so
-  `load_state_dict` (copy) *casts the source up to fp32* — a full fp32 CPU duplicate
-  before you ever reach `.to(fp16)`.
-- **The source dict stays alive.** `Loaded.weights` (safetensors mmap refs, or the
-  GGUF-dequantized fp32 tensors) is held for the whole run unless you drop it.
-
-Mitigations we apply:
-
-- **`load_state_dict(sd, strict=True, assign=True)`** — params *become* the loaded
-  tensors (source dtype) instead of being copied into fresh fp32 params. No fp32
-  inflation on load.
-- **Free the source after moving to device** — `run.py` calls `L.weights.clear()`
-  right after `model.to(device, dtype)`, so steady-state ≈ one copy (on device);
-  only a brief transient during `.to` holds two.
-- **Dequantize GGUF straight to fp16** (not fp32) — the model is fp16 on GPU anyway,
-  so it's lossless vs the final weights and halves the CPU dequant buffer. (e.g.
-  gemma-2-2b: the dequant drops ~10 GB → ~5 GB, so the load peak ~17 GB → ~10 GB.)
-- **Stream weights onto the device** (done): build the model on `meta` (no
-  allocation), then per parameter `pop` the source → move to device → assign (CPU
-  source freed). CPU shrinks as the device grows, so the two never both hold a full
-  copy → **load peak ≈ steady state**. (`weights.py` `load` takes `device, dtype`;
-  `run.py` no longer does a bulk `.to`.)
-
-Concrete numbers (gemma-2-2b, ~2.6B): fp32 dequant ≈10 GB + fp16 device copy ≈5 GB →
-~17 GB; free source → ~6 GB steady (peak still ~17); fp16 dequant → ~10 GB peak;
-**streaming → ~6 GB peak**.
-
-### Streaming's tradeoffs (it isn't free)
-
-- **Slower load** — many small host→device transfers + per-tensor Python/sync
-  overhead instead of one bulk `.to`. You trade load latency for lower peak memory.
-- **More complex, less readable** — builds on `meta` and assigns params by hand
-  (touches `module._parameters`), bypassing `load_state_dict`. This cuts against the
-  "readable study code" goal; it's the one spot where we accept extra machinery for
-  a real benefit (fitting bigger models in limited RAM).
-- **You re-implement the safeguards** `load_state_dict` gave for free — we manually
-  check **missing** tensors and **shape per param** (a wrong name-map would otherwise
-  silently assign a mismatched tensor). Don't drop those checks.
-- **Tied weights need manual care** — after the move, share the Parameter explicitly
-  (`lm_head.weight = embed_tokens.weight`); otherwise the embedding is duplicated.
-
-Rule of thumb: **"unified memory" still means a second buffer for the device copy** —
-load lean (assign, target dtype) and release the CPU source once it's on the device.
-
----
-
-## 4d. Lesson: load buffers, not just parameters
-
-**A weight loader that only iterates `named_parameters()` silently skips persistent
-`buffers`** — and some architectures ship non-trivial buffers in the checkpoint.
-Gemma4's `layer_scalar` (a per-layer LayerScale-style residual scale, `register_buffer`,
-saved in the safetensors, value ≠ 1.0) is the case that bit us: it was left at its
-init default while the checkpoint's value went unloaded.
-
-Why it was nasty to diagnose: a wrong *scalar* changes the residual's **magnitude but
-not its direction**, so a per-layer / per-submodule **cosine** check (cosine is
-scale-invariant) reads ~1.0 right up to the broken layer — yet the wrong magnitude
-corrupts the residual-stream *proportions* of every later layer. Symptom: parity
-perfect at layer 0, then a steady collapse to cosine ≈ 0, with the final logits
-uncorrelated. (`gemma4_debug.py` is the layer-by-layer localizer that found it.)
-
-Rules:
-- After loading params, **materialize and load buffers too** (from the checkpoint when
-  the name is present, else the module default) — especially required when building on
-  `meta`, where an unloaded buffer stays a meta tensor and the forward fails.
-- When debugging parity, **don't trust cosine alone** for a "this layer is fine" call —
-  a scale error hides from it. Compare magnitudes (norms) when a sum-of-correct-vectors
-  still drifts.
+Hard-won surprises (GGUF weight constant-folding, load-time memory doubling, buffers
+vs parameters, chat-template provenance, …) are recorded explicitly in
+**[docs/LESSONS.md](docs/LESSONS.md)** as `L-#` entries — kept out of this file so
+CONVENTIONS stays the *structural* pattern for adding a family. When a new gotcha bites,
+record it there.
 
 ## 5. Adding a family — checklist
 

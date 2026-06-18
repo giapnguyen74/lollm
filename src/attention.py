@@ -62,7 +62,7 @@ def torch_attention_with_scale(q, k, v, scale, sliding_window=None, softcap=None
       • manual scores + fp32 softmax (so the soft-cap fits and large Gemma logits stay
         safe), instead of `F.scaled_dot_product_attention`.
     The caller has already projected, applied QK-norm/RoPE, appended to the cache, and
-    GQA-expanded K/V. A Gemma-specific kernel may replace this later (see docs/ISSUES.md).
+    GQA-expanded K/V. A Gemma-specific kernel may replace this later (see docs/ROADMAP.md R-6).
 
         q: (B, H, q_len, D)   k, v: (B, H, total_k, D)   total_k >= q_len
     """

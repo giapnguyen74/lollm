@@ -65,7 +65,7 @@ value ≠ 1. That left every layer's output at the wrong *magnitude* — invisib
 per-submodule cosine check (cosine is scale-invariant) but it corrupted the
 residual-stream proportions of every later layer, so parity was perfect at layer 0 and
 collapsed from layer 1 on. Fix: `weights.load` now materializes buffers too. (General
-lesson in `CONVENTIONS.md` §4d.)
+lesson in `LESSONS.md` L-3.)
 
 ---
 

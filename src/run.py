@@ -56,7 +56,7 @@ def encode_prompt(tok, prompt, no_chat, think=False):
                 return tok.apply_chat(prompt)
         # Chat was expected but there's no template → we send a RAW prompt. Instruction-
         # tuned models degenerate on raw prompts (loop/ramble), so warn loudly — this is
-        # easy to miss (the parity gate never exercises the template). See docs/ISSUES.md §5.
+        # easy to miss (the parity gate never exercises the template). See docs/ROADMAP.md R-7.
         print("[warning: no chat template for this model — sending a RAW prompt. "
               "Instruction-tuned models may ramble/repeat. If the repo ships a "
               "chat_template.jinja, make sure it downloaded; pass --no-chat to silence.]",
