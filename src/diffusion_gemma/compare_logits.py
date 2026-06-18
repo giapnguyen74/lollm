@@ -75,13 +75,24 @@ def main():
     ref = DiffusionGemmaForBlockDiffusion.from_pretrained(args.model, dtype=dtype).to(device).eval()
     tok = AutoTokenizer.from_pretrained(args.model)
 
-    # build OUR modules from the real config; SHARE the reference's weights (assign=True → no copy)
+    # build OUR modules on `meta` (NO weight allocation) then ASSIGN the reference's tensors, so we
+    # genuinely SHARE the reference weights. Building with real weights first would allocate a full
+    # ~24B-param copy per module on the GPU (the 128 MoE experts dominate) → OOM (L-2).
+    from blocks import default_inv_freq, proportional_inv_freq
     cfg = DiffusionGemmaConfig.from_hf(ref.config.to_dict())
     canvas_length = ref.config.canvas_length
-    enc = EncoderTextModel(cfg).to(device, dtype).eval()
-    dec = DecoderTextModel(cfg).to(device, dtype).eval()
+    with torch.device("meta"):
+        enc, dec = EncoderTextModel(cfg), DecoderTextModel(cfg)
     enc.load_state_dict(ref.model.encoder.language_model.state_dict(), strict=True, assign=True)
     dec.load_state_dict(ref.model.decoder.state_dict(), strict=True, assign=True)
+    # RoPE `inv_freq` are computed (non-persistent) buffers → not in the state_dict, so materialize
+    # them on the real device (otherwise they stay meta tensors and the forward fails).
+    for m in (enc, dec):
+        m.rope_sliding.inv_freq = default_inv_freq(cfg.rope_theta_local, cfg.head_dim).to(device)
+        m.rope_full.inv_freq = proportional_inv_freq(
+            cfg.rope_theta_global, cfg.global_head_dim, cfg.partial_rotary_factor_global).to(device)
+    enc.eval()
+    dec.eval()
 
     # encode a real prompt via the model's own chat template
     enc_in = tok.apply_chat_template([{"role": "user", "content": args.prompt}], tokenize=True,

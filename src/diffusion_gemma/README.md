@@ -51,19 +51,27 @@ compare_logits.py           parity gate vs the real transformers checkpoint (see
 The rung-by-rung throwaway parity harnesses live in the workshop copy (`debug/diffusion_gemma/`),
 not here. Here, the real check is `compare_logits.py`.
 
-## Run the parity gate (real checkpoint)
+## Run on the real checkpoint
+
+**Generation test (current)** — load the real model and generate, no reference comparison
+(memory-light: a single ~52GB copy, shared via meta+assign):
 
 ```bash
-python src/diffusion_gemma/compare_logits.py --model google/diffusiongemma-26B-A4B-it \
-    --prompt "Why is the sky blue?"
-python src/diffusion_gemma/compare_logits.py --generate        # + a real generation
+python src/diffusion_gemma/generate.py --prompt "Why is the sky blue?"
 ```
 
-It loads the real model, builds our encoder/decoder from the real config, **shares** the reference
-weights (no extra memory), and compares **denoiser logits** on a fixed canvas (per-position argmax
-agreement + cosine). `--generate` runs `generate_diffusion` and prints text. **PASS** =
-`cosine > 0.999 and argmax agreement > 0.99` (looser because the real run is bf16; `--dtype float32`
-tightens it). ~26B params — see the header of `compare_logits.py` for memory/dtype notes.
+It loads the checkpoint once, builds our encoder/decoder on `meta` and **assigns** the reference
+weights (our modules add ~no memory — L-2), then runs `generate_diffusion` and prints text.
+Device/dtype auto-detect like `run.py` (cuda→bf16, mps→fp16, cpu→fp32; override `--device`/`--dtype`).
+
+**Parity gate (heavier, deferred)** — `compare_logits.py` also runs the *reference* forward to compare
+denoiser logits (cosine + per-position argmax agreement). It needs activations for **both** models, so
+it's **set aside for now** on memory grounds — use it when you have headroom (or `--dtype float32` for a
+strict check). PASS = `cosine > 0.999 and argmax agreement > 0.99`.
+
+```bash
+python src/diffusion_gemma/compare_logits.py --prompt "Why is the sky blue?"
+```
 
 ## Known limitations (rung 6)
 
