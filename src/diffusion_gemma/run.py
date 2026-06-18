@@ -1,10 +1,16 @@
 """
 run.py — diffusion_gemma CLI (standalone; the family is NOT wired into the shared engine yet).
 
-Two runtime features copied from the engine's loader/generate:
-  • lean weight load — stream tensors CPU → GPU one at a time, freeing each CPU source as it goes
-    (peak ≈ one copy), with a progress bar;
+Two runtime features:
+  • lean weight load — `device_map` streams the checkpoint shards straight onto the accelerator
+    (transformers' own progress bar) without a full CPU copy; our encoder + decoder then SHARE that
+    single set of weights (they're tied), so there's exactly one copy in memory;
   • streaming generation — print each committed canvas (block) as it's produced.
+
+NB: a hand-rolled per-module CPU→GPU stream does NOT work here — the encoder and decoder share tied
+weights, so streaming one module can't free the CPU tensors the other still holds (CPU OOM) and the
+two modules end up with separate GPU copies (2× memory). Sharing a single device-resident copy is
+the correct lean load.
 
     python src/diffusion_gemma/run.py --prompt "Why is the sky blue?"
     python src/diffusion_gemma/run.py --prompt "..." --max-new-canvases 6
@@ -55,21 +61,6 @@ def _g(o, n, d):                                              # gen-config field
     return d if v is None else v
 
 
-def stream_to_gpu(module, device, label):
-    """Move each loaded param/buffer CPU → `device` in place, freeing the CPU source as we go
-    (peak ≈ one copy). Meta tensors (the not-yet-materialised RoPE buffers) are skipped. Mirrors the
-    engine's streaming weight load (LESSONS L-2): CPU shrinks as GPU grows."""
-    tensors = [t for _, t in module.named_parameters()]
-    tensors += [b for _, b in module.named_buffers() if b is not None]
-    movable = [t for t in tensors if not t.is_meta]
-    n, t0 = len(movable), time.time()
-    for i, t in enumerate(movable, 1):
-        t.data = t.data.to(device)                           # CPU tensor freed once no refs remain
-        if i % 25 == 0 or i == n:
-            print(f"\r[{label}] streaming → {device}: {i}/{n}", end="", file=sys.stderr, flush=True)
-    print(f"   [{time.time() - t0:.1f}s, CPU freed]", file=sys.stderr)
-
-
 def main():
     ap = argparse.ArgumentParser(description="diffusion_gemma standalone CLI (streaming)")
     ap.add_argument("--model", default="google/diffusiongemma-26B-A4B-it")
@@ -84,30 +75,33 @@ def main():
 
     from transformers import AutoTokenizer, DiffusionGemmaForBlockDiffusion
     t0 = time.time()
-    print(f"[loading {args.model} ({str(dtype).split('.')[-1]}) → CPU]", file=sys.stderr)
-    ref = DiffusionGemmaForBlockDiffusion.from_pretrained(args.model, dtype=dtype)   # stays on CPU
+    # Lean GPU load: `device_map` makes transformers stream shards straight onto the accelerator
+    # (its own "Loading weights" bar) WITHOUT materialising a full CPU copy. Our encoder + decoder then
+    # SHARE that single set of weights via meta+assign — crucially they're tied (same tensors), so a
+    # hand-rolled per-module CPU→GPU stream would (a) double GPU memory and (b) keep CPU pinned because
+    # the other module still references the tied tensors → OOM. Sharing avoids both.
+    dmap = device if device.startswith("cuda") else None
+    print(f"[loading {args.model} ({str(dtype).split('.')[-1]}) → {device}]", file=sys.stderr)
+    ref = DiffusionGemmaForBlockDiffusion.from_pretrained(args.model, dtype=dtype, device_map=dmap)
+    if dmap is None:
+        ref = ref.to(device)
     tok = AutoTokenizer.from_pretrained(args.model)
     cfg = DiffusionGemmaConfig.from_hf(ref.config.to_dict())
     canvas_length = ref.config.canvas_length
     gen = ref.generation_config
 
-    # build OUR modules on meta and ASSIGN the reference's CPU tensors (share, no copy), then drop the
-    # reference so we hold the only refs — and stream those tensors onto the GPU, freeing CPU as we go.
     with torch.device("meta"):
         enc, dec = EncoderTextModel(cfg), DecoderTextModel(cfg)
     enc.load_state_dict(ref.model.encoder.language_model.state_dict(), strict=True, assign=True)
-    dec.load_state_dict(ref.model.decoder.state_dict(), strict=True, assign=True)
-    del ref                                                   # free the ref wrapper + vision tower (CPU)
-
-    stream_to_gpu(enc, device, "encoder")
-    stream_to_gpu(dec, device, "decoder")
+    dec.load_state_dict(ref.model.decoder.state_dict(), strict=True, assign=True)  # shares enc's tied weights
     for m in (enc, dec):                                      # RoPE inv_freq are computed, not loaded
         m.rope_sliding.inv_freq = default_inv_freq(cfg.rope_theta_local, cfg.head_dim).to(device)
         m.rope_full.inv_freq = proportional_inv_freq(
             cfg.rope_theta_global, cfg.global_head_dim, cfg.partial_rotary_factor_global).to(device)
     enc.eval()
     dec.eval()
-    print(f"[loaded in {time.time() - t0:.1f}s]", file=sys.stderr)
+    print(f"[loaded in {time.time() - t0:.1f}s — weights shared with the reference (single copy)]",
+          file=sys.stderr)
 
     ids = tok.apply_chat_template([{"role": "user", "content": args.prompt}], tokenize=True,
                                   add_generation_prompt=True, return_dict=True,

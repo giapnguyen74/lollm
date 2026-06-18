@@ -54,19 +54,19 @@ not here. Here, the real check is `compare_logits.py`.
 
 ## Run on the real checkpoint
 
-**Generate (current)** — the standalone CLI: streams weights CPU→GPU (freeing CPU as it goes, with
-a progress bar) and streams generation block-by-block:
+**Generate (current)** — the standalone CLI: lean GPU load + block-by-block streamed output:
 
 ```bash
 python src/diffusion_gemma/run.py --prompt "Why is the sky blue?"
 python src/diffusion_gemma/run.py --prompt "..." --max-new-canvases 6
 ```
 
-It loads the checkpoint to CPU, builds our encoder/decoder on `meta` + **assigns** the reference
-tensors, drops the reference, then **streams each tensor onto the GPU freeing the CPU source** (peak ≈
-one copy — L-2), and runs `generate_diffusion` with a block-level streamer. Device/dtype auto-detect
+`device_map` streams the checkpoint shards **straight onto the accelerator** (no full CPU copy), and
+our encoder/decoder **share** that single set of weights via meta+assign (they're tied — one copy in
+memory). Then `generate_diffusion` runs with a block-level streamer. Device/dtype auto-detect
 (cuda→bf16, mps→fp16, cpu→fp32; override `--device`/`--dtype`). `generate.py` is the library
-(`generate_diffusion`, now with an `on_block` streaming callback).
+(`generate_diffusion`, with an `on_block` streaming callback). See `LESSONS.md` L-10 for why a
+hand-rolled per-module CPU→GPU stream OOMs here (tied weights).
 
 **Parity gate (heavier, deferred)** — `compare_logits.py` also runs the *reference* forward to compare
 denoiser logits (cosine + per-position argmax agreement). It needs activations for **both** models, so

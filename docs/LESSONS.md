@@ -15,6 +15,7 @@ that cost us debugging time. Record new ones here as `L-#` (stable, never renumb
 | L-7 | parity / testing| Don't seed-match two stochastic loops & compare tokens — drive ONE trajectory, compare logits |
 | L-8 | parity / testing| Test sequences **longer than the sliding window** — short prompts hide window bugs (cf. T-2) |
 | L-9 | parity / testing| Self-consistency (ours==ours) ≠ ref-parity; know exactly what a green check proves |
+| L-10| loading / memory| Tied weights break the per-tensor streaming load — share one device copy instead |
 
 ---
 
@@ -267,3 +268,27 @@ short sequences as everything else. So a green check gave false confidence that 
 **Rule:** be explicit about what each check covers. Self-consistency (ours==ours) catches internal
 contradictions but **inherits every blind spot** of the inputs you feed it; only an *ours-vs-reference*
 check at the regime that actually matters (here, context > window) proves parity there.
+
+---
+
+## L-10 · Tied weights break the per-tensor streaming load — share one device copy instead
+
+The engine's lean-load pattern (L-2) — move each tensor CPU→GPU and free the CPU source as you go —
+**silently breaks when two modules share tied weights.** diffusion_gemma's encoder and decoder share
+all text weights (the reference ties them). Loading them as two of our modules and streaming each to
+the GPU separately did two bad things at once:
+
+1. **CPU never freed.** Streaming the encoder's tensors can't release them, because the decoder still
+   references the same (tied) tensors. So the full ~52GB stays pinned in RAM through the whole encoder
+   pass (we saw ~swap-thrash, then the OS **OOM-killed** the process — "Killed").
+2. **GPU doubled.** The decoder then got its **own** GPU copy of the (tied) weights instead of sharing
+   the encoder's → 2× device memory.
+
+Fix: don't hand-roll the stream. Let the loader put **one** copy on the device (`from_pretrained(...,
+device_map=device)` streams shards straight to GPU, no full CPU copy) and have both modules **share**
+that single set via `load_state_dict(..., assign=True)` on `meta`-built modules. One copy in memory,
+no CPU pinned.
+
+**Rule:** before streaming-and-freeing weights tensor-by-tensor, check whether any are shared/tied. If
+so, share a single device-resident copy rather than streaming per module — otherwise you pay 2× memory
+*and* pin the CPU source.
