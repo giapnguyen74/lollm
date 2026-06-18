@@ -48,11 +48,19 @@ def resolve_sampling(gen_sampling, fam_defaults, user):
 
 
 def encode_prompt(tok, prompt, no_chat, think=False):
-    if not no_chat and tok.chat_template:
-        try:
-            return tok.apply_chat(prompt, enable_thinking=think)
-        except TypeError:                       # tokenizer's apply_chat takes no such kwarg
-            return tok.apply_chat(prompt)
+    if not no_chat:
+        if tok.chat_template:
+            try:
+                return tok.apply_chat(prompt, enable_thinking=think)
+            except TypeError:                   # tokenizer's apply_chat takes no such kwarg
+                return tok.apply_chat(prompt)
+        # Chat was expected but there's no template → we send a RAW prompt. Instruction-
+        # tuned models degenerate on raw prompts (loop/ramble), so warn loudly — this is
+        # easy to miss (the parity gate never exercises the template). See docs/ISSUES.md §5.
+        print("[warning: no chat template for this model — sending a RAW prompt. "
+              "Instruction-tuned models may ramble/repeat. If the repo ships a "
+              "chat_template.jinja, make sure it downloaded; pass --no-chat to silence.]",
+              file=sys.stderr, flush=True)
     return tok.encode(prompt)
 
 

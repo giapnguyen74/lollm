@@ -95,3 +95,45 @@ Why it bypasses SDPA differs by family:
 
 **Where:** `src/attention.py`, `src/gemma2/blocks.py`, `src/gemma3/blocks.py`.
 
+---
+
+## 5. Chat template provenance is inconsistent across repos (inference quirk)
+
+**Severity:** medium (correct logits, broken *generation*) — fixed for the common case,
+but a standing thing to be aware of.
+
+Where a model's chat template lives is **not standardized**:
+
+- **older repos** inline it in `tokenizer_config.json` (`chat_template` field) →
+  `AutoTokenizer` picks it up automatically;
+- **newer repos** (gemma-4, gemma-3 4B+) ship it as a **standalone
+  `chat_template.jinja`** file in the repo → only loaded if that file is present in the
+  local snapshot;
+- some repos document the intended format **only in the repo README** (prose), which a
+  loader **cannot** auto-apply at all.
+
+This bit us: the download allow-list pulled `tokenizer*` / `*.model` but **not**
+`chat_template.jinja`, so the file never reached the snapshot, `tok.chat_template` was
+`None`, and `run.py` silently fell back to a **raw prompt**. An instruction-tuned model
+then degenerates — gemma-4-e2b-it on "What is coffee" looped `coffee coffee coffee…`
+(it just *continues* the text instead of answering). The **parity gate never catches
+this** because `compare_logits` uses raw prompts and never exercises the chat template —
+only end-to-end generation surfaces it.
+
+**Fixed (common case):** added `chat_template.jinja` / `*.jinja` to `loader._HF_PATTERNS`
+so the standalone template is downloaded; `AutoTokenizer` then loads it.
+
+**Still unhandled (be aware):**
+- README-only template conventions — no general way to auto-apply; would need a
+  per-model override.
+- If both `tokenizer_config.json` and `chat_template.jinja` exist and **disagree**,
+  precedence is `transformers`' call, not ours.
+- The GGUF path carries its own `tokenizer.chat_template` metadata (separate code
+  path) — a model could have one there but not in safetensors, or vice versa.
+- Sanity check when generation looks wrong: print `tok.chat_template` truthiness and
+  the decoded prompt (does it have `<start_of_turn>`/role wrappers?) before suspecting
+  the model math.
+
+**Where:** `src/loader.py` (`_HF_PATTERNS`), `src/run.py` (`encode_prompt` fallback),
+`src/tokenization.py`.
+
