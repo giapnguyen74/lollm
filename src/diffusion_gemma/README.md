@@ -33,8 +33,9 @@ blocks.py                   RMSNorm · dual+proportional RoPE · attention (enco
 modeling_diffusion_gemma.py EncoderTextModel (causal, incremental cache) · DecoderTextModel
                             (bidirectional + self-conditioning + tied lm-head/softcap)
 sampler.py                  EntropyBoundSampler · linear temperature · adaptive stop · denoise_block
-generate.py                 generate_diffusion — the block-AR outer loop
-compare_logits.py           parity gate vs the real transformers checkpoint (see below)
+generate.py                 generate_diffusion — the block-AR outer loop (+ on_block streamer)
+run.py                      standalone CLI: streaming weight load (CPU→GPU, free CPU) + streamed output
+compare_logits.py           parity gate vs the real transformers checkpoint (heavier; see below)
 ```
 
 ## Verification status (vs `transformers`, tiny random-weight module-parity)
@@ -53,16 +54,19 @@ not here. Here, the real check is `compare_logits.py`.
 
 ## Run on the real checkpoint
 
-**Generation test (current)** — load the real model and generate, no reference comparison
-(memory-light: a single ~52GB copy, shared via meta+assign):
+**Generate (current)** — the standalone CLI: streams weights CPU→GPU (freeing CPU as it goes, with
+a progress bar) and streams generation block-by-block:
 
 ```bash
-python src/diffusion_gemma/generate.py --prompt "Why is the sky blue?"
+python src/diffusion_gemma/run.py --prompt "Why is the sky blue?"
+python src/diffusion_gemma/run.py --prompt "..." --max-new-canvases 6
 ```
 
-It loads the checkpoint once, builds our encoder/decoder on `meta` and **assigns** the reference
-weights (our modules add ~no memory — L-2), then runs `generate_diffusion` and prints text.
-Device/dtype auto-detect like `run.py` (cuda→bf16, mps→fp16, cpu→fp32; override `--device`/`--dtype`).
+It loads the checkpoint to CPU, builds our encoder/decoder on `meta` + **assigns** the reference
+tensors, drops the reference, then **streams each tensor onto the GPU freeing the CPU source** (peak ≈
+one copy — L-2), and runs `generate_diffusion` with a block-level streamer. Device/dtype auto-detect
+(cuda→bf16, mps→fp16, cpu→fp32; override `--device`/`--dtype`). `generate.py` is the library
+(`generate_diffusion`, now with an `on_block` streaming callback).
 
 **Parity gate (heavier, deferred)** — `compare_logits.py` also runs the *reference* forward to compare
 denoiser logits (cosine + per-position argmax agreement). It needs activations for **both** models, so
@@ -75,10 +79,10 @@ python src/diffusion_gemma/compare_logits.py --prompt "Why is the sky blue?"
 
 ## Known limitations (rung 6)
 
-- **Long-context sliding-window cache** — sliding layers must clip the KV cache to `sliding_window`
-  (1024) once context exceeds it; we currently keep the full cache, so generations **longer than the
-  window** diverge from the reference (within-window is verified). The one real correctness gap. See
-  `LESSONS.md` L-8 and `debug/diffusion_gemma/PLANNING.md`.
+- ✅ **Long-context sliding-window cache** — *fixed*. Sliding layers now clip their KV cache to
+  `window - 1` (matching the reference exactly; verified at context > window), which also bounds
+  long-context memory. (See `LESSONS.md` L-8; the diagnostic that pinned the semantics is
+  `debug/diffusion_gemma/_diag_sliding.py`.)
 - **Vision tower** not built (text-only) — the `gemma4_vision` SigLIP encoder + soft-token merge.
 - **GGUF** unsupported (hard-fail) until the `diffusion_gemma` metadata is verified vs llama.cpp.
 - **Not integrated** — no `run.py` / `models.py` wiring; the shared AR generate loop can't drive

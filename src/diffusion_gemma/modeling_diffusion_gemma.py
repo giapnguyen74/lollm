@@ -109,12 +109,16 @@ class EncoderTextModel(_RopePair):
             position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None]
         cs_s, cs_f = self.cossin(x, position_ids)
         cache = []
+        w = self.cfg.sliding_window - 1                          # sliding layers cache the last window-1 K/V
         for i, layer in enumerate(self.layers):
             cos, sin = cs_s if self.cfg.is_sliding(i) else cs_f
             past_kv = past_cache[i] if past_cache is not None else None
             if return_cache:
                 x, kv = layer(x, cos, sin, past_kv=past_kv, return_kv=True)
-                cache.append(kv)                                # accumulated (k,v) pre-repeat, per layer
+                if self.cfg.is_sliding(i):                       # CLIP sliding cache to the window (matches
+                    kv = (kv[0][..., -w:, :].contiguous(),       # the reference; bounds long-context memory).
+                          kv[1][..., -w:, :].contiguous())       # contiguous() so the dropped K/V is freed.
+                cache.append(kv)                                 # accumulated (k,v) pre-repeat, per layer
             else:
                 x = layer(x, cos, sin, past_kv=past_kv)
         x = self.norm(x)
@@ -147,8 +151,9 @@ class DecoderTextModel(_RopePair):
             soft = torch.zeros_like(emb)
         x = self.self_conditioning(emb, soft)                   # always applied (post_norm)
 
-        # canvas positions continue AFTER the encoder sequence
-        s_enc = encoder_cache[0][0].shape[2]
+        # canvas positions continue AFTER the encoder sequence. Use a GLOBAL layer's cache for the
+        # true length — sliding layers are clipped to the window, so cache[0] would under-count.
+        s_enc = encoder_cache[self.cfg.first_global_layer][0].shape[2]
         pos = torch.arange(s_enc, s_enc + canvas_ids.shape[1], device=canvas_ids.device)[None]
         cs_s, cs_f = self.cossin(x, pos)
         for i, layer in enumerate(self.layers):

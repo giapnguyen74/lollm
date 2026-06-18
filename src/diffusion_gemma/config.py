@@ -41,6 +41,15 @@ class DiffusionGemmaConfig:
     def is_sliding(self, i: int) -> bool:
         return self.layer_types[i] == "sliding_attention"
 
+    @property
+    def first_global_layer(self) -> int:
+        """Index of the first full-attention layer (its cache is never clipped, so it tracks the
+        true sequence length even when sliding layers are capped to the window)."""
+        for i in range(self.num_hidden_layers):
+            if not self.is_sliding(i):
+                return i
+        return 0
+
     @classmethod
     def from_hf(cls, raw: dict) -> "DiffusionGemmaConfig":
         t = raw.get("text_config", raw)
