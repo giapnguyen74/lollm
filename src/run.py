@@ -54,13 +54,16 @@ def encode_prompt(tok, prompt, no_chat, think=False):
                 return tok.apply_chat(prompt, enable_thinking=think)
             except TypeError:                   # tokenizer's apply_chat takes no such kwarg
                 return tok.apply_chat(prompt)
-        # Chat was expected but there's no template → we send a RAW prompt. Instruction-
-        # tuned models degenerate on raw prompts (loop/ramble), so warn loudly — this is
-        # easy to miss (the parity gate never exercises the template). See docs/ROADMAP.md R-7.
-        print("[warning: no chat template for this model — sending a RAW prompt. "
-              "Instruction-tuned models may ramble/repeat. If the repo ships a "
-              "chat_template.jinja, make sure it downloaded; pass --no-chat to silence.]",
-              file=sys.stderr, flush=True)
+        # Chat was expected but there's NO template → hard-fail, never guess. Sending a raw
+        # prompt to an instruction-tuned model degenerates (loops/rambles) and the parity gate
+        # never exercises the template, so a silent raw fallback would emit confident garbage.
+        # Raising forces an explicit decision; `--no-chat` is the deliberate opt-in to raw
+        # prompting (correct for base/non-instruct models). See docs/LESSONS.md L-4, ROADMAP R-7.
+        sys.exit(
+            "[error: this model has no chat template, so it can't be prompted in chat mode. "
+            "If it's an instruction-tuned model, the template likely didn't download — check "
+            "for a chat_template.jinja in the repo. If it's a base/non-instruct model, pass "
+            "--no-chat to prompt it raw.]")
     return tok.encode(prompt)
 
 

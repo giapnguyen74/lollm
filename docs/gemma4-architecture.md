@@ -175,8 +175,13 @@ checkpoint, the strict loader will tell you exactly which layers share.)
 
 Unlike Gemma3's uniform heads, Gemma4 makes **global (full-attention) layers wider**:
 
-- **`global_head_dim = 512`** vs local `head_dim = 256`. The attention scale must use
-  the *per-layer* head dim (pass an explicit `scale=` to `scaled_dot_product_attention`).
+- **`global_head_dim = 512`** vs local `head_dim = 256`. (Early-spec note, **superseded**:
+  this section originally said the attention scale must use the per-layer head dim. The
+  as-built E2B checkpoint has `query_pre_attn_scalar` gone and **QK-norm absorbs the
+  scaling**, so the verified code passes a flat **`scale=1.0`** for both local and global
+  layers — see "As-built corrections." The only per-layer scalar is the **residual-stream
+  output scale** `layer_scalar` applied at the *end* of each layer, which is unrelated to
+  the attention softmax scale.)
 - Optionally **fewer global KV heads** (`num_global_key_value_heads`).
 - Global layers use **proportional RoPE** (`rope_type="proportional"`,
   `partial_rotary_factor=0.25`) at θ=1e6 — only the first 25% of head dims are
@@ -329,9 +334,12 @@ large but mostly independent and feed the same decoder.
 
 - **Eager attention for the reference** — like Gemma2/3, load the transformers
   reference with `attn_implementation="eager"` so masks/scales match exactly.
-- **Per-layer head dim** — the global scale is `global_head_dim^-0.5` (512), the
-  local scale `head_dim^-0.5` (256). A single hard-coded scale will silently break
-  parity on global layers.
+- **Attention scale is a flat `1.0`** (verified) — `query_pre_attn_scalar` is gone and
+  QK-norm absorbs the scaling, so there is **no** per-layer `head_dim^-0.5` softmax scale
+  despite the asymmetric (256/512) head dims. (This corrects the early spec, which
+  expected a per-layer scale; parity on `google/gemma-4-e2b-it` passes with `scale=1.0`.)
+  Don't confuse this with the per-layer **`layer_scalar`** residual-output scale, which
+  *is* real and per-layer but applies to the layer output, not the attention logits.
 - **PLE is the likely first divergence** — if logits drift, suspect the PLE combine
   (token-identity + projected-main) or its injection point (after attn & FFN, scaled)
   before suspecting RoPE/norm.

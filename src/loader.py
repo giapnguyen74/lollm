@@ -119,6 +119,11 @@ def _load_gguf(path: str) -> Loaded:
     # Tokenizer by type (both hand-written from the GGUF vocab, no external deps):
     #   gpt2  → byte-level BPE   (Qwen, Llama-3)
     #   llama → SentencePiece    (Gemma, Llama-2, Mistral-SPM)
+    # DELIBERATE DEFAULT (the one accepted exception to "hard-fail, never guess"): a
+    # missing `tokenizer.ggml.model` assumes "gpt2" BPE. The GGUF spec defaults this key
+    # to "gpt2", the SPM family reliably writes it, and a wrong guess garbles decode on the
+    # first run (loud, not silent) — so the default is safe. Unsupported types still raise
+    # below. Rationale recorded in docs/LESSONS.md L-6.
     tmodel = meta.get("tokenizer.ggml.model", "gpt2")
     if tmodel == "gpt2":
         tok = BPETokenizer.from_gguf(meta)

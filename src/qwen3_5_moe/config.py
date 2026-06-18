@@ -97,6 +97,20 @@ class Qwen3_5MoeConfig:
         # width so the dense MLP is still constructible if a config does force a dense layer.
         moe_inter = t.get("moe_intermediate_size", t.get("intermediate_size", 0))
         dense_inter = t.get("intermediate_size", moe_inter)
+        # Routing width is load-bearing and must never be guessed: a missing key defaulting
+        # to 0 makes `torch.topk(probs, 0)` select NO experts, so only the shared expert
+        # survives and the model emits fluent-but-wrong text with no error. Per "hard-fail,
+        # never guess" we raise instead of defaulting. (num_experts itself is allowed to be
+        # absent → is_moe_layer treats <=0 as "no MoE layers".)
+        if "num_experts_per_tok" in t:
+            n_experts_per_tok = t["num_experts_per_tok"]
+        elif "num_experts_per_token" in t:
+            n_experts_per_tok = t["num_experts_per_token"]
+        else:
+            raise KeyError(
+                "qwen3_5_moe config has no 'num_experts_per_tok' (router top-k width). "
+                "Refusing to default to 0 — that would route to zero experts and emit "
+                "confident garbage. Add the key to config.json.")
         return cls(
             vocab_size=t["vocab_size"],
             hidden_size=hidden,
@@ -122,7 +136,7 @@ class Qwen3_5MoeConfig:
             linear_conv_kernel_dim=t["linear_conv_kernel_dim"],
             # ── MoE ──
             num_experts=t.get("num_experts", t.get("n_routed_experts", 0)),
-            num_experts_per_tok=t.get("num_experts_per_tok", t.get("num_experts_per_token", 0)),
+            num_experts_per_tok=n_experts_per_tok,   # resolved above (raises if absent)
             moe_intermediate_size=moe_inter,
             shared_expert_intermediate_size=t.get("shared_expert_intermediate_size", 0),
             norm_topk_prob=t.get("norm_topk_prob", True),

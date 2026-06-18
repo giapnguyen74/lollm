@@ -96,9 +96,9 @@ pip install -e .                  # editable: src/ changes take effect immediate
 ```
 
 `pip install -e .` pulls in torch, numpy, safetensors, transformers, huggingface_hub,
-regex, and jinja2 (floors pinned in `pyproject.toml`) and exposes two console scripts
-— `lollm` (run) and `compare` (parity gate). For an exact, reproducible environment,
-freeze: `pip freeze > requirements.lock`.
+regex, and jinja2 (floors pinned in `pyproject.toml`) and exposes the `lollm` console
+script (run). The parity gate is run directly as `python src/compare_logits.py` (see
+below). For an exact, reproducible environment, freeze: `pip freeze > requirements.lock`.
 
 > **Backend, tested models, and the per-GPU torch wheel matrix:**
 > see **[docs/setup.md](docs/setup.md)**. Validated on Apple Silicon (MPS) and NVIDIA

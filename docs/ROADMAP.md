@@ -76,3 +76,6 @@ Templates ship inconsistently: inlined in `tokenizer_config.json`, as a standalo
 `chat_template.jinja` (now downloaded — see LESSONS.md L-4), or **only described in the repo
 README** (can't auto-apply). Also: config-vs-jinja disagreements, and the GGUF
 `tokenizer.chat_template` metadata path. No general fix; may need per-model overrides.
+Current behavior: a model with **no** template hard-fails in chat mode (`run.py`), and
+`--no-chat` is the explicit bypass to raw prompting — so the README-only-template case
+surfaces loudly instead of silently degenerating.

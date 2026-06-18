@@ -127,6 +127,7 @@ class BPETokenizer:
 
     @classmethod
     def from_gguf(cls, meta):
+        # Deliberate "gpt2" default — the one accepted exception to hard-fail (docs/LESSONS.md L-6).
         if meta.get("tokenizer.ggml.model", "gpt2") != "gpt2":
             raise NotImplementedError("only GPT-2 byte-level BPE tokenizers supported")
         self = cls.__new__(cls)
