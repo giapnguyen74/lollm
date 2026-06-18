@@ -113,10 +113,35 @@ record it there.
 [ ] __init__.py: MODEL_TYPES, DEFAULTS, register(load)
 [ ] models.py:   add `import <family>`
 [ ] parity:      python src/compare_logits.py --model <repo>   → PASS ✅   (do not skip)
+[ ] real run:    python src/run.py --model <repo> --prompt "…"  on your ACTUAL device
+                 → coherent text (the fp32 CPU gate never exercises the bf16/fp16 runtime)
 ```
 
-The parity gate is the only proof of correctness. Self-contained code makes bugs
-easy to *see*; matching logits proves they're *absent*.
+Two checks — they catch **different classes of bug**:
+
+- **Parity gate** (`compare_logits`, fp32/CPU) catches **silent implementation errors** —
+  a wrong RoPE, norm, scale, or weight-map. These barely show in generation: a subtly
+  wrong model still emits **fluent, confident text**, so you'd never spot the bug by
+  reading output. Parity compares token-for-token against the reference, so it flags the
+  mismatch *immediately* (and a layer-by-layer comparison localizes it). It's the fast debugger
+  for *math* bugs — but it runs fp32 on CPU, so it never exercises the deployed dtype or
+  the harness.
+- **Real run** (`run.py` on your ACTUAL device) catches **visible runtime/harness
+  failures** — fp16 overflow → NaN, missing chat template → loops, a cache/decode bug →
+  garbage. These live entirely outside the fp32 parity path.
+
+The trap: **fluent generation is not evidence of a correct implementation — only parity
+is.** Pass *both* before trusting a family (see LESSONS.md L-4, L-5).
+
+**Dev-time only — throwaway random-weight tests.** While *building* a complex family,
+the fastest way to localize a *math* bug is a temporary **module-parity** check: build
+your block and the `transformers` block with the *same random weights* and compare
+outputs — no download, runs in seconds, points straight at the broken component. But it
+**only tests layer math**: random weights bypass the real loader (so it can't catch a
+name-map / skipped-buffer bug) and it never touches the runtime dtype or harness. So it
+**never replaces** the two checks above — write it to debug, **delete it once parity
+passes**. We keep these out of the committed suite; the durable tests are
+`compare_logits` + `sanity_test` only.
 
 ---
 

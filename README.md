@@ -33,7 +33,7 @@ Shared infra: loader/router/streaming generate loop · GGUF parse + dequant
 load (peak ≈ steady) with a progress bar · cache-aware download skip · per-family
 `kv.py` cache · an optional Triton flash-attention kernel (CUDA, opt-in via
 `LOLLM_ATTN`; torch SDPA is the default/validated path) · the `compare_logits` /
-`sanity_test` parity gate plus offline family self-tests (e.g. `gemma3_selftest.py`).
+`sanity_test` parity gate.
 
 ## Vision
 
@@ -44,9 +44,10 @@ load (peak ≈ steady) with a progress bar · cache-aware download skip · per-f
    norms, RoPE, the generate loop) depends on **PyTorch alone** — no `transformers`
    modeling, no `llama.cpp`. We parse GGUF and dequantize ourselves (numpy) and build
    each architecture from `nn.Module` primitives. (`huggingface_hub` only *downloads*
-   files — it never touches the forward pass.) **Known wart:** the safetensors path
-   still leans on `transformers.AutoTokenizer` for tokenization; we plan to drop that
-   later (the GGUF path already tokenizes on its own).
+   files — it never touches the forward pass.) **Tokenizer:** hand-written, no
+   `transformers` — the safetensors path reads `tokenizer.json` / `tokenizer.model` +
+   `tokenizer_config.json` directly (byte-level BPE for Qwen; SentencePiece for Gemma) —
+   **parity-verified vs `AutoTokenizer`** (raw text + chat template).
 3. **Hard-fail, never guess.** When something is unknown or unverified — a missing
    `model_type`, an unmapped weight name, an unconfirmed GGUF key — we **raise loudly**
    instead of falling back to a plausible default. A crash tells us exactly what to

@@ -106,6 +106,17 @@ def compare(model_spec: str, prompt: str = "The capital of France is") -> dict:
         decode = HFTokenizer(path).decode      # fresh tokenizer (we freed L above)
         ot, rt = int(ours.argmax()), int(r.argmax())
         cos = torch.nn.functional.cosine_similarity(ours, r, dim=0).item()
+        # Tiny tokenizer guard: the gate feeds OUR `ids` to both models, so it can't see a
+        # tokenizer bug (ours could mis-encode and logits would still match). Cross-check
+        # our encoding against the transformers tokenizer as the oracle. Skips on GGUF
+        # (no HF tokenizer dir). tok_ok is reported separately — it doesn't gate logits.
+        tok_ok = None
+        try:
+            import transformers
+            ref_ids = transformers.AutoTokenizer.from_pretrained(path)(prompt)["input_ids"]
+            tok_ok = ref_ids == ids
+        except Exception:
+            pass
         # Gate on the *meaningful* signals: same prediction + near-identical direction. Raw
         # max|Δ| is noisy across kernels (fp32 summation order) — reported, not gated.
         return {
@@ -115,6 +126,7 @@ def compare(model_spec: str, prompt: str = "The capital of France is") -> dict:
             "max_abs": (ours - r).abs().max().item(),
             "cosine": cos,
             "top5_match": ours.topk(5).indices.tolist() == r.topk(5).indices.tolist(),
+            "tok_ok": tok_ok,
             "ok": ot == rt and cos > 0.9999,
         }
 
@@ -131,6 +143,9 @@ def main():
     print(f"ref top : {res['ref_top']} -> {res['ref_text']!r}")
     print(f"max |Δ| : {res['max_abs']:.4f} | cosine : {res['cosine']:.6f} | "
           f"top-5 match: {res['top5_match']}")
+    tok = res["tok_ok"]
+    print("tokenizer:", "OK ✅" if tok else ("MISMATCH ❌ (our encoding ≠ transformers)"
+                                            if tok is False else "skipped (no HF tokenizer)"))
     print("RESULT:", "PASS ✅" if res["ok"] else "CHECK ❌")
 
 

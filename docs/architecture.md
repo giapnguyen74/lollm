@@ -70,7 +70,6 @@ file roles, the self-containment rule, and the numbered-step `forward` narration
 Each model is proven **end-to-end** (load → generate → `compare_logits` parity vs
 `transformers`) on **Mac (MPS)** and **CUDA** — e.g. Qwen3.5-4B matches the
 reference at cosine ≈ 1 (same top token), and Qwen3.6-27B runs on CUDA. Plus:
-registry/router dispatch (unknown `model_type` raises), `weights.to_raw` maps,
-sampling precedence, and the qwen3_5 self-tests (`src/qwen3_5_selftest.py`: conv
-causality, recurrent==chunked delta-rule, prefill==incremental decode, MTP shapes).
-`compare_logits.py` / `sanity_test.py` are the gate to re-run for any new model.
+registry/router dispatch (unknown `model_type` raises), `weights.to_raw` maps, and
+sampling precedence. `compare_logits.py` / `sanity_test.py` are the gate to re-run for
+any new model.

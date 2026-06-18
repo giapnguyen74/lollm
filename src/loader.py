@@ -27,7 +27,7 @@ from safetensors.torch import load_file
 from dequant import dequantize
 from gguf_reader import GGUFReader
 from progress import bar
-from tokenization import GGUFTokenizer, HFTokenizer, SPMTokenizer
+from tokenization import BPETokenizer, HFTokenizer, SPMTokenizer
 
 # what we pull for a safetensors repo
 _HF_PATTERNS = [
@@ -121,9 +121,9 @@ def _load_gguf(path: str) -> Loaded:
     #   llama → SentencePiece    (Gemma, Llama-2, Mistral-SPM)
     tmodel = meta.get("tokenizer.ggml.model", "gpt2")
     if tmodel == "gpt2":
-        tok = GGUFTokenizer(meta)
+        tok = BPETokenizer.from_gguf(meta)
     elif tmodel in ("llama", "gemma"):
-        tok = SPMTokenizer(meta)
+        tok = SPMTokenizer.from_gguf(meta)
     else:
         raise NotImplementedError(f"tokenizer.ggml.model='{tmodel}' not supported "
                                   f"(have: gpt2 BPE, llama SentencePiece)")

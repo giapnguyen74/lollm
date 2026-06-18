@@ -48,14 +48,12 @@ these are authoritative:
 ### Parity status — ✅ PASSED
 
 Validated against `transformers` on `google/gemma-4-e2b-it` (fp32 CPU): final-token
-**cosine ≈ 1.0, same top token**, and `gemma4_debug.py` shows per-layer hidden-state
-cosine ≈ 1.0 across all 35 layers.
+**cosine ≈ 1.0, same top token**, with per-layer hidden states matching across all
+35 layers.
 
 ```bash
 huggingface-cli login
 python src/compare_logits.py --model google/gemma-4-e2b-it   # PASS ✅
-python src/gemma4_debug.py                                   # per-layer cos ≈ 1.0
-python src/gemma4_selftest.py                                # offline structural checks
 ```
 
 **The bug that took the most finding** (recorded so the next arch doesn't repeat it):
@@ -64,8 +62,8 @@ the per-layer `layer_scalar` is a **buffer**, and the streaming loader only load
 value ≠ 1. That left every layer's output at the wrong *magnitude* — invisible to a
 per-submodule cosine check (cosine is scale-invariant) but it corrupted the
 residual-stream proportions of every later layer, so parity was perfect at layer 0 and
-collapsed from layer 1 on. Fix: `weights.load` now materializes buffers too. (General
-lesson in `LESSONS.md` L-3.)
+collapsed from layer 1 on. Found by a layer-by-layer hidden-state comparison against the
+reference. Fix: `weights.load` now materializes buffers too. (General lesson: `LESSONS.md` L-3.)
 
 ---
 

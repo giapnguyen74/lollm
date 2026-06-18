@@ -105,7 +105,7 @@ not its direction**, so a per-layer / per-submodule **cosine** check (cosine is
 scale-invariant) reads ~1.0 right up to the broken layer — yet the wrong magnitude
 corrupts the residual-stream *proportions* of every later layer. Symptom: parity
 perfect at layer 0, then a steady collapse to cosine ≈ 0, with the final logits
-uncorrelated. (`gemma4_debug.py` is the layer-by-layer localizer that found it.)
+uncorrelated. (A layer-by-layer hidden-state comparison against the reference found it.)
 
 Rules:
 - After loading params, **materialize and load buffers too** (from the checkpoint when

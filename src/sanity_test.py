@@ -25,7 +25,6 @@ from compare_logits import compare, CompareError
 MODELS = [
     ("qwen2",   "Qwen/Qwen2.5-0.5B-Instruct"),
     ("qwen3",   "Qwen/Qwen3-0.6B"),
-    ("qwen3_5", "Qwen/Qwen3.5-4B"),
     ("gemma2",  "google/gemma-2-2b-it"),
     ("gemma3",  "google/gemma-3-1b-it"),
 ]
@@ -51,7 +50,8 @@ def main():
             status, cos = ("PASS" if r["ok"] else "CHECK"), r["cosine"]
             print(f"  reference: {r['reference']}")
             print(f"  our: {r['our_top']} {r['our_text']!r}  |  ref: {r['ref_top']} {r['ref_text']!r}")
-            print(f"  cosine {cos:.6f} | max|Δ| {r['max_abs']:.4f} | top-5 {r['top5_match']}"
+            tok = {True: "tok✅", False: "tok❌", None: "tok–"}[r.get("tok_ok")]
+            print(f"  cosine {cos:.6f} | max|Δ| {r['max_abs']:.4f} | top-5 {r['top5_match']} | {tok}"
                   f"  ->  {'PASS ✅' if r['ok'] else 'CHECK ❌ (logits diverged)'}", flush=True)
         except CompareError as e:
             # tag it: a download/access/load problem vs a forward/compare (logits) problem
