@@ -69,10 +69,11 @@ def main():
     device = pick_device(args.device)
     dtype = pick_dtype(device)
 
-    from transformers import AutoProcessor, DiffusionGemmaForBlockDiffusion
+    # text-only parity → use the tokenizer (AutoProcessor would pull in PIL for the image path)
+    from transformers import AutoTokenizer, DiffusionGemmaForBlockDiffusion
     print(f"[loading {args.model} ({str(dtype).split('.')[-1]}) on {device}]", file=sys.stderr)
     ref = DiffusionGemmaForBlockDiffusion.from_pretrained(args.model, dtype=dtype).to(device).eval()
-    proc = AutoProcessor.from_pretrained(args.model)
+    tok = AutoTokenizer.from_pretrained(args.model)
 
     # build OUR modules from the real config; SHARE the reference's weights (assign=True → no copy)
     cfg = DiffusionGemmaConfig.from_hf(ref.config.to_dict())
@@ -83,8 +84,8 @@ def main():
     dec.load_state_dict(ref.model.decoder.state_dict(), strict=True, assign=True)
 
     # encode a real prompt via the model's own chat template
-    enc_in = proc.apply_chat_template([{"role": "user", "content": args.prompt}], tokenize=True,
-                                      add_generation_prompt=True, return_dict=True, return_tensors="pt")
+    enc_in = tok.apply_chat_template([{"role": "user", "content": args.prompt}], tokenize=True,
+                                     add_generation_prompt=True, return_dict=True, return_tensors="pt")
     ids = enc_in["input_ids"].to(device)
     print(f"[prompt → {ids.shape[1]} tokens]", file=sys.stderr)
 
@@ -121,7 +122,7 @@ def main():
                                      max_denoising_steps=_cfg_get(gc, "max_denoising_steps", 48),
                                      t_min=_cfg_get(gc, "t_min", 0.4), t_max=_cfg_get(gc, "t_max", 0.8),
                                      eos_ids=_cfg_get(gc, "eos_token_id", None))
-        print("\n[generated]\n" + proc.decode(out[0], skip_special_tokens=True))
+        print("\n[generated]\n" + tok.decode(out[0], skip_special_tokens=True))
 
 
 if __name__ == "__main__":

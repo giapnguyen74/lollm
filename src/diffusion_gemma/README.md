@@ -75,3 +75,19 @@ tightens it). ~26B params — see the header of `compare_logits.py` for memory/d
 - **GGUF** unsupported (hard-fail) until the `diffusion_gemma` metadata is verified vs llama.cpp.
 - **Not integrated** — no `run.py` / `models.py` wiring; the shared AR generate loop can't drive
   diffusion, so it needs `generate_diffusion` selected explicitly (a deferred, explicit step).
+
+## Config sources (two files)
+
+DiffusionGemma splits config the standard HF way:
+
+- **`config.json`** — architecture. `config.py::from_hf` reads its `text_config`; `canvas_length`
+  (the block size) is top-level and read separately.
+- **`generation_config.json`** — the diffusion **sampler** knobs: `max_denoising_steps`,
+  `confidence_threshold`, `stability_threshold`, `t_min`/`t_max`, `sampler_config.entropy_bound`,
+  `eos_token_id`. These are generation policy (like `temperature`/`top_p` for AR models), **not** in
+  `config.json`.
+
+> **Current behaviour:** we **reuse these generation params from the loaded reference**
+> (`ref.generation_config` in `compare_logits.py`) rather than parsing `generation_config.json`
+> ourselves. That's fine for the parity gate. The standalone run path (no `transformers`) will need a
+> small `generation_config.json` parser feeding the loader's `gen_meta` — **deferred to integration**.
