@@ -41,22 +41,31 @@ these are authoritative:
   PLE dim 256.
 - **Shared-KV donors:** the last non-shared layer of each type (sliding=13, full=14)
   store full K/V; layers 15–34 reuse it (no k/v projections on those layers).
+- **Per-layer residual scale.** Each layer ends with `hidden_states *= layer_scalar`,
+  a **saved buffer** (LayerScale-style, *not* always 1.0). It's a buffer, not a
+  parameter — see the parity story below.
 
-### Parity status
+### Parity status — ✅ PASSED
 
-Text decoder implemented in `src/gemma4/` and offline-checked
-(`python src/gemma4_selftest.py`: prefill==decode with shared-KV, donor/shared
-structure, double-wide MLP, proportional-RoPE width, final soft-cap, shape). The
-numeric gate runs where the gated checkpoint + torch are available:
+Validated against `transformers` on `google/gemma-4-e2b-it` (fp32 CPU): final-token
+**cosine ≈ 1.0, same top token**, and `gemma4_debug.py` shows per-layer hidden-state
+cosine ≈ 1.0 across all 35 layers.
 
 ```bash
 huggingface-cli login
-python src/compare_logits.py --model google/gemma-4-e2b-it   # text-only; expect cosine ≈ 1
+python src/compare_logits.py --model google/gemma-4-e2b-it   # PASS ✅
+python src/gemma4_debug.py                                   # per-layer cos ≈ 1.0
+python src/gemma4_selftest.py                                # offline structural checks
 ```
 
-> Top parity suspects if it diverges: the **proportional RoPE** (only the first
-> `partial·head_dim/2` pairs rotate, rest zero-padded), the **PLE combine**
-> (`(norm(proj·hidden^-½) + scaled_id) · 2^-½`), and **scale=1.0** (not `head_dim^-½`).
+**The bug that took the most finding** (recorded so the next arch doesn't repeat it):
+the per-layer `layer_scalar` is a **buffer**, and the streaming loader only loaded
+`named_parameters()`, so it was silently left at the default 1.0 while the checkpoint's
+value ≠ 1. That left every layer's output at the wrong *magnitude* — invisible to a
+per-submodule cosine check (cosine is scale-invariant) but it corrupted the
+residual-stream proportions of every later layer, so parity was perfect at layer 0 and
+collapsed from layer 1 on. Fix: `weights.load` now materializes buffers too. (General
+lesson in `CONVENTIONS.md` §4d.)
 
 ---
 

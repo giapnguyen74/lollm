@@ -33,6 +33,11 @@ from tokenization import GGUFTokenizer, HFTokenizer, SPMTokenizer
 _HF_PATTERNS = [
     "config.json", "generation_config.json", "*.safetensors",
     "*.safetensors.index.json", "tokenizer*", "*.model", "special_tokens_map.json",
+    # newer repos (e.g. gemma-4) ship the chat template as a standalone Jinja file
+    # instead of inlining it in tokenizer_config.json — without it AutoTokenizer has
+    # no chat_template, so run.py falls back to a RAW prompt and instruct models
+    # degenerate (e.g. "coffee coffee coffee…"). Pull it.
+    "chat_template.jinja", "*.jinja",
 ]
 
 

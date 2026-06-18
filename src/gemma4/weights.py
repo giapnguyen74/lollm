@@ -72,6 +72,20 @@ def load(raw_config: dict, weights: dict, fmt: str, device="cpu", dtype=None,
         _set_param(model, name, t.to(device))
     if progress is not None:
         progress(len(params), len(params))
+
+    # Buffers (built on `meta`) must be materialized: load `layer_scalar` from the
+    # checkpoint where present, else default to ones. (Rotary tables aren't buffers here.)
+    for name, buf in list(model.named_buffers()):
+        raw = _resolve(to_raw(name, fmt), weights)
+        t = weights.pop(raw) if raw is not None else torch.ones(tuple(buf.shape))
+        if dtype is not None:
+            t = t.to(dtype)
+        *path, last = name.split(".")
+        m = model
+        for p in path:
+            m = getattr(m, p)
+        m._buffers[last] = t.to(device)
+
     if tied:
         model.lm_head.weight = model.model.embed_tokens.weight
     return model.eval()

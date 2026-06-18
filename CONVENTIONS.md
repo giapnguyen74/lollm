@@ -173,6 +173,29 @@ load lean (assign, target dtype) and release the CPU source once it's on the dev
 
 ---
 
+## 4d. Lesson: load buffers, not just parameters
+
+**A weight loader that only iterates `named_parameters()` silently skips persistent
+`buffers`** — and some architectures ship non-trivial buffers in the checkpoint.
+Gemma4's `layer_scalar` (a per-layer LayerScale-style residual scale, `register_buffer`,
+saved in the safetensors, value ≠ 1.0) is the case that bit us: it was left at its
+init default while the checkpoint's value went unloaded.
+
+Why it was nasty to diagnose: a wrong *scalar* changes the residual's **magnitude but
+not its direction**, so a per-layer / per-submodule **cosine** check (cosine is
+scale-invariant) reads ~1.0 right up to the broken layer — yet the wrong magnitude
+corrupts the residual-stream *proportions* of every later layer. Symptom: parity
+perfect at layer 0, then a steady collapse to cosine ≈ 0, with the final logits
+uncorrelated. (`gemma4_debug.py` is the layer-by-layer localizer that found it.)
+
+Rules:
+- After loading params, **materialize and load buffers too** (from the checkpoint when
+  the name is present, else the module default) — especially required when building on
+  `meta`, where an unloaded buffer stays a meta tensor and the forward fails.
+- When debugging parity, **don't trust cosine alone** for a "this layer is fine" call —
+  a scale error hides from it. Compare magnitudes (norms) when a sum-of-correct-vectors
+  still drifts.
+
 ## 5. Adding a family — checklist
 
 ```

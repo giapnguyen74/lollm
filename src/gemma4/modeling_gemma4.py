@@ -37,6 +37,10 @@ class DecoderLayer(nn.Module):
         self.per_layer_input_gate = nn.Linear(cfg.hidden_size, ple, bias=False)
         self.per_layer_projection = nn.Linear(ple, cfg.hidden_size, bias=False)
         self.post_per_layer_input_norm = Gemma4RMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
+        # Per-layer residual scale (LayerScale-style): a saved buffer, NOT always 1.0.
+        # Omitting it leaves each layer's output at the wrong magnitude, which corrupts
+        # the residual-stream proportions of every later layer (parity dies by layer 1).
+        self.register_buffer("layer_scalar", torch.ones(1))
 
     def forward(self, x, per_layer_input, cos, sin, cache, shared_kv):
         # 1. ATTENTION sub-block (sandwich): x = x + post_norm(attn(pre_norm(x))).
@@ -50,7 +54,8 @@ class DecoderLayer(nn.Module):
         h = F.gelu(h, approximate="tanh") * per_layer_input
         h = self.per_layer_projection(h)
         x = x + self.post_per_layer_input_norm(h)
-        return x
+        # 4. Per-layer residual scale (applied to the whole layer output).
+        return x * self.layer_scalar
 
 
 class Gemma4Model(nn.Module):

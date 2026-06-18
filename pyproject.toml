@@ -34,7 +34,6 @@ triton = ["triton>=2.2"]
 
 [project.scripts]
 lollm = "run:main"
-compare = "compare_logits:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
