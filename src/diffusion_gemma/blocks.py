@@ -94,7 +94,10 @@ def repeat_kv(x, n):
 
 
 class Attention(nn.Module):
-    """Encoder (causal) attention. scale=1.0; QK-norm + V-norm; global layers have no v_proj."""
+    """The ONE attention block, run in two modes over the SAME weights:
+      • `causal(...)`  — prefill / re-encode (write-cache, offset-causal + sliding window);
+      • `cross(...)`   — denoise (bidirectional over the canvas, reads the read-only encoder cache).
+    scale=1.0; QK-norm + V-norm; global layers have no v_proj (V reuses the K projection)."""
 
     def __init__(self, cfg: DiffusionGemmaConfig, layer_idx: int):
         super().__init__()
@@ -127,7 +130,8 @@ class Attention(nn.Module):
         v = self.v_norm(v_raw).transpose(1, 2)                   # NOTE: V gets no RoPE
         return q, k, v
 
-    def forward(self, x, cos, sin, past_kv=None, return_kv=False):
+    def causal(self, x, cos, sin, past_kv=None, return_kv=False):
+        """Prefill / re-encode: offset-causal (+ sliding band), optionally appending to `past_kv`."""
         B, S, _ = x.shape
         q, k_new, v_new = self._qkv(x, cos, sin)                 # new tokens' q,k,v (B,*,S,D)
         if past_kv is not None:                                  # incremental: prepend cached K/V
@@ -151,21 +155,18 @@ class Attention(nn.Module):
         attn = torch.softmax(scores.float(), dim=-1).to(q.dtype)
         out = torch.matmul(attn, v).transpose(1, 2).reshape(B, S, -1)
         out = self.o_proj(out)
-        return (out, (k_kv, v_kv)) if return_kv else out         # cache = accumulated pre-repeat K/V         # cache stores PRE-repeat k,v
+        return (out, (k_kv, v_kv)) if return_kv else out         # cache = accumulated pre-repeat K/V
 
-
-class DecoderAttention(Attention):
-    """Bidirectional canvas attention that READS a (read-only) encoder KV cache by concatenation.
-    Same projections/norms/k_eq_v as the encoder attention; differs only in mask + cache concat."""
-
-    def forward(self, x, cos, sin, enc_k, enc_v):
-        # enc_k, enc_v: the encoder's cached (B, kv_heads, S_enc, D) for THIS layer (pre-repeat).
+    def cross(self, x, cos, sin, enc_k, enc_v):
+        """Denoise: bidirectional over the canvas, reading the read-only encoder cache by concat.
+        enc_k, enc_v: the encoder's cached (B, kv_heads, S_enc, D) for THIS layer (pre-repeat)."""
         B, S, _ = x.shape
         q, k_can, v_can = self._qkv(x, cos, sin)                 # canvas q,k,v
-        k = torch.cat([enc_k, k_can], dim=2)                    # [encoder ; canvas] keys
+        k = torch.cat([enc_k, k_can], dim=2)                     # [encoder ; canvas] keys
         v = torch.cat([enc_v, v_can], dim=2)
         k, v = repeat_kv(k, self.groups), repeat_kv(v, self.groups)
-        # no-padding dynamic-cache case → HF returns mask=None → FULL bidirectional, no window
+        # no-padding dynamic-cache case → HF mask=None → FULL bidirectional (the clipped sliding cache
+        # already enforces the window on the cache side).
         scores = torch.matmul(q, k.transpose(2, 3)) * 1.0
         attn = torch.softmax(scores.float(), dim=-1).to(q.dtype)
         out = torch.matmul(attn, v).transpose(1, 2).reshape(B, S, -1)

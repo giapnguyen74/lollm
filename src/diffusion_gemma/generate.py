@@ -16,20 +16,20 @@ from sampler import denoise_block
 
 
 @torch.no_grad()
-def generate_diffusion(enc, dec, sampler, stop, prompt, *, max_new_canvases, max_denoising_steps,
+def generate_diffusion(model, sampler, stop, prompt, *, max_new_canvases, max_denoising_steps,
                        t_min, t_max, eos_ids=None, sample=True, on_block=None):
-    """`enc`/`dec` = our Encoder/DecoderTextModel; returns the generated token ids (canvases
-    concatenated). `on_block(block)` — if given — is called with each finished canvas as it commits
-    (block-level streaming)."""
+    """`model` = the single `DiffusionGemmaModel` (run via `.prefill` / `.denoise`); returns the
+    generated token ids (canvases concatenated). `on_block(block)` — if given — is called with each
+    finished canvas as it commits (block-level streaming)."""
     device = prompt.device
     batch = prompt.shape[0]
     eos = torch.tensor(list(eos_ids), device=device) if eos_ids else None
 
-    cache = enc(prompt, return_cache=True)[1]                    # 1. prefill the prompt
+    cache = model.prefill(prompt, return_cache=True)[1]          # 1. prefill the prompt (causal)
     blocks = []
     for _ in range(max_new_canvases):
-        def forward_logits(canvas, self_cond):                  # decoder reads the (read-only) cache
-            return dec.to_logits(dec(canvas, cache, self_conditioning_logits=self_cond))
+        def forward_logits(canvas, self_cond):                  # denoise reads the (read-only) cache
+            return model.to_logits(model.denoise(canvas, cache, self_conditioning_logits=self_cond))
 
         block = denoise_block(forward_logits, sampler, stop, max_denoising_steps=max_denoising_steps,
                               t_min=t_min, t_max=t_max, batch_size=batch, device=device, sample=sample)
@@ -39,7 +39,7 @@ def generate_diffusion(enc, dec, sampler, stop, prompt, *, max_new_canvases, max
         if eos is not None and bool(torch.isin(block, eos).any()):
             break                                               # eos in the block → stop
         # 2. commit: re-encode the finished block into the cache (causal), growing it by one canvas
-        clen = cache[enc.cfg.first_global_layer][0].shape[2]    # true length (sliding caches are clipped)
+        clen = cache[model.cfg.first_global_layer][0].shape[2]  # true length (sliding caches are clipped)
         pos = torch.arange(clen, clen + block.shape[1], device=device)[None]
-        cache = enc(block, past_cache=cache, position_ids=pos, return_cache=True)[1]
+        cache = model.prefill(block, past_cache=cache, position_ids=pos, return_cache=True)[1]
     return torch.cat(blocks, dim=1)

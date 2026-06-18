@@ -30,7 +30,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(__file__))
 from config import DiffusionGemmaConfig                                   # noqa: E402
-from modeling_diffusion_gemma import DecoderTextModel, EncoderTextModel   # noqa: E402
+from modeling_diffusion_gemma import DiffusionGemmaModel                  # noqa: E402
 from blocks import default_inv_freq, proportional_inv_freq               # noqa: E402
 from sampler import EntropyBoundSampler, StableAndConfidentStopping       # noqa: E402
 from generate import generate_diffusion                                  # noqa: E402
@@ -90,16 +90,15 @@ def main():
     canvas_length = ref.config.canvas_length
     gen = ref.generation_config
 
+    # ONE backbone, ONE load. The decoder state_dict carries the full text weights + the decoder-only
+    # self_conditioning, so it populates the whole model; share the reference tensors via assign.
     with torch.device("meta"):
-        enc, dec = EncoderTextModel(cfg), DecoderTextModel(cfg)
-    enc.load_state_dict(ref.model.encoder.language_model.state_dict(), strict=True, assign=True)
-    dec.load_state_dict(ref.model.decoder.state_dict(), strict=True, assign=True)  # shares enc's tied weights
-    for m in (enc, dec):                                      # RoPE inv_freq are computed, not loaded
-        m.rope_sliding.inv_freq = default_inv_freq(cfg.rope_theta_local, cfg.head_dim).to(device)
-        m.rope_full.inv_freq = proportional_inv_freq(
-            cfg.rope_theta_global, cfg.global_head_dim, cfg.partial_rotary_factor_global).to(device)
-    enc.eval()
-    dec.eval()
+        model = DiffusionGemmaModel(cfg)
+    model.load_state_dict(ref.model.decoder.state_dict(), strict=True, assign=True)
+    model.rope_sliding.inv_freq = default_inv_freq(cfg.rope_theta_local, cfg.head_dim).to(device)
+    model.rope_full.inv_freq = proportional_inv_freq(
+        cfg.rope_theta_global, cfg.global_head_dim, cfg.partial_rotary_factor_global).to(device)
+    model.eval()
     print(f"[loaded in {time.time() - t0:.1f}s — weights shared with the reference (single copy)]",
           file=sys.stderr)
 
@@ -119,7 +118,7 @@ def main():
         print(tok.decode(block[0], skip_special_tokens=True), end="", flush=True)
         n_tok[0] += block.shape[1]
 
-    generate_diffusion(enc, dec, sampler, stop, ids,
+    generate_diffusion(model, sampler, stop, ids,
                        max_new_canvases=args.max_new_canvases,
                        max_denoising_steps=_g(gen, "max_denoising_steps", 48),
                        t_min=_g(gen, "t_min", 0.4), t_max=_g(gen, "t_max", 0.8),

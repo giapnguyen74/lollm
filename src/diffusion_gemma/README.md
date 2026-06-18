@@ -30,8 +30,9 @@ stop) wrapped in an outer **block-AR loop** (commit → re-encode → next canva
 config.py                   real config.json (text_config) → flat dataclass
 blocks.py                   RMSNorm · dual+proportional RoPE · attention (encoder causal /
                             decoder bidirectional, global k_eq_v) · dense MLP · MoE router/experts
-modeling_diffusion_gemma.py EncoderTextModel (causal, incremental cache) · DecoderTextModel
-                            (bidirectional + self-conditioning + tied lm-head/softcap)
+modeling_diffusion_gemma.py DiffusionGemmaModel — ONE backbone, run two ways: `.prefill()` (causal,
+                            grows the KV cache) · `.denoise()` (bidirectional canvas + self-conditioning)
+                            · `.to_logits()` (tied lm-head + softcap)
 sampler.py                  EntropyBoundSampler · linear temperature · adaptive stop · denoise_block
 generate.py                 generate_diffusion — the block-AR outer loop (+ on_block streamer)
 run.py                      standalone CLI: streaming weight load (CPU→GPU, free CPU) + streamed output

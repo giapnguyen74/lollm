@@ -27,7 +27,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(__file__))
 from config import DiffusionGemmaConfig                                   # noqa: E402
-from modeling_diffusion_gemma import DecoderTextModel, EncoderTextModel   # noqa: E402
+from modeling_diffusion_gemma import DiffusionGemmaModel                  # noqa: E402
 
 
 def _cfg_get(obj, name, default):
@@ -75,24 +75,22 @@ def main():
     ref = DiffusionGemmaForBlockDiffusion.from_pretrained(args.model, dtype=dtype).to(device).eval()
     tok = AutoTokenizer.from_pretrained(args.model)
 
-    # build OUR modules on `meta` (NO weight allocation) then ASSIGN the reference's tensors, so we
-    # genuinely SHARE the reference weights. Building with real weights first would allocate a full
-    # ~24B-param copy per module on the GPU (the 128 MoE experts dominate) → OOM (L-2).
+    # build OUR backbone on `meta` (NO weight allocation) then ASSIGN the reference's tensors, so we
+    # SHARE the reference weights (one copy). Building with real weights would allocate a full ~24B-param
+    # copy on the GPU (the 128 MoE experts dominate) → OOM (L-2). One load from the decoder state_dict
+    # (it carries the full text weights + the decoder-only self_conditioning).
     from blocks import default_inv_freq, proportional_inv_freq
     cfg = DiffusionGemmaConfig.from_hf(ref.config.to_dict())
     canvas_length = ref.config.canvas_length
     with torch.device("meta"):
-        enc, dec = EncoderTextModel(cfg), DecoderTextModel(cfg)
-    enc.load_state_dict(ref.model.encoder.language_model.state_dict(), strict=True, assign=True)
-    dec.load_state_dict(ref.model.decoder.state_dict(), strict=True, assign=True)
+        model = DiffusionGemmaModel(cfg)
+    model.load_state_dict(ref.model.decoder.state_dict(), strict=True, assign=True)
     # RoPE `inv_freq` are computed (non-persistent) buffers → not in the state_dict, so materialize
     # them on the real device (otherwise they stay meta tensors and the forward fails).
-    for m in (enc, dec):
-        m.rope_sliding.inv_freq = default_inv_freq(cfg.rope_theta_local, cfg.head_dim).to(device)
-        m.rope_full.inv_freq = proportional_inv_freq(
-            cfg.rope_theta_global, cfg.global_head_dim, cfg.partial_rotary_factor_global).to(device)
-    enc.eval()
-    dec.eval()
+    model.rope_sliding.inv_freq = default_inv_freq(cfg.rope_theta_local, cfg.head_dim).to(device)
+    model.rope_full.inv_freq = proportional_inv_freq(
+        cfg.rope_theta_global, cfg.global_head_dim, cfg.partial_rotary_factor_global).to(device)
+    model.eval()
 
     # encode a real prompt via the model's own chat template
     enc_in = tok.apply_chat_template([{"role": "user", "content": args.prompt}], tokenize=True,
@@ -104,8 +102,8 @@ def main():
     torch.manual_seed(0)
     canvas = torch.randint(0, cfg.vocab_size, (1, canvas_length), device=device)
     with torch.no_grad():
-        cache = enc(ids, return_cache=True)[1]
-        ours = dec.to_logits(dec(canvas, cache)).float()
+        cache = model.prefill(ids, return_cache=True)[1]
+        ours = model.to_logits(model.denoise(canvas, cache)).float()
         refl = ref(input_ids=ids, decoder_input_ids=canvas).logits.float()
 
     cos = torch.nn.functional.cosine_similarity(ours.flatten(), refl.flatten(), dim=0).item()
@@ -128,7 +126,7 @@ def main():
         stop = StableAndConfidentStopping(_cfg_get(gc, "stability_threshold", 1),
                                           _cfg_get(gc, "confidence_threshold", 0.005))
         with torch.no_grad():
-            out = generate_diffusion(enc, dec, sampler, stop, ids,
+            out = generate_diffusion(model, sampler, stop, ids,
                                      max_new_canvases=args.max_new_canvases,
                                      max_denoising_steps=_cfg_get(gc, "max_denoising_steps", 48),
                                      t_min=_cfg_get(gc, "t_min", 0.4), t_max=_cfg_get(gc, "t_max", 0.8),
