@@ -1,0 +1,91 @@
+<svg viewBox="0 0 720 600" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" role="img">
+  <title>DiffusionGemma Entropy-Bound denoising loop</title>
+  <desc>A canvas of random tokens is denoised iteratively: the model predicts a canvas, an acceptance step keeps the lowest-entropy tokens, the rest are re-randomised, and the loop repeats until the max steps or adaptive stop triggers.</desc>
+
+  <defs>
+    <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#6b7280"/>
+    </marker>
+    <marker id="ahi" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#3b6fb0"/>
+    </marker>
+  </defs>
+
+  <style>
+    .box  { fill: #ffffff; stroke: #9aa1ac; stroke-width: 1.5; }
+    .rnd  { fill: #ffffff; stroke: #c2c7cf; stroke-width: 1.5; stroke-dasharray: 5 4; }
+    .pill { fill: #f4f8fd; stroke: #3b6fb0; stroke-width: 1.5; }
+    .t    { fill: #1f2937; font-size: 13px; font-weight: 600; }
+    .s    { fill: #6b7280; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .op   { fill: #3b6fb0; font-size: 12px; font-weight: 600; }
+    .ops  { fill: #3b6fb0; font-size: 10px; }
+    .edge { stroke: #6b7280; stroke-width: 1.5; fill: none; }
+    .edgei{ stroke: #3b6fb0; stroke-width: 1.5; fill: none; }
+    .cap  { fill: #8a909a; font-size: 10px; }
+  </style>
+
+  <rect x="0" y="0" width="720" height="600" fill="#ffffff"/>
+
+  <!-- init -->
+  <rect class="rnd" x="120" y="24" width="190" height="48" rx="9"/>
+  <text class="t" x="215" y="44" text-anchor="middle">Canvas initialization</text>
+  <text class="s" x="215" y="61" text-anchor="middle">x_T ∈ U(V) · random</text>
+
+  <!-- current -->
+  <rect class="box" x="120" y="150" width="190" height="48" rx="9"/>
+  <text class="t" x="215" y="170" text-anchor="middle">Current canvas</text>
+  <text class="s" x="215" y="187" text-anchor="middle">x_t</text>
+
+  <!-- denoiser -->
+  <rect class="box" x="430" y="150" width="190" height="48" rx="9"/>
+  <text class="t" x="525" y="170" text-anchor="middle">Denoiser canvas</text>
+  <text class="s" x="525" y="187" text-anchor="middle">x_D ~ model(x_t)</text>
+
+  <!-- acceptance -->
+  <ellipse class="pill" cx="370" cy="256" rx="92" ry="27"/>
+  <text class="op" x="370" y="253" text-anchor="middle">Acceptance logic</text>
+  <text class="ops" x="370" y="269" text-anchor="middle">keep lowest-entropy tokens</text>
+
+  <!-- accepted -->
+  <rect class="box" x="120" y="330" width="190" height="48" rx="9"/>
+  <text class="t" x="215" y="350" text-anchor="middle">Accepted canvas</text>
+  <text class="s" x="215" y="367" text-anchor="middle">x_{t-1}</text>
+
+  <!-- new random -->
+  <rect class="rnd" x="430" y="330" width="190" height="48" rx="9"/>
+  <text class="t" x="525" y="350" text-anchor="middle">New canvas</text>
+  <text class="s" x="525" y="367" text-anchor="middle">∈ U(V) · random</text>
+
+  <!-- renoising -->
+  <ellipse class="pill" cx="370" cy="436" rx="92" ry="27"/>
+  <text class="op" x="370" y="433" text-anchor="middle">Renoising logic</text>
+  <text class="ops" x="370" y="449" text-anchor="middle">re-randomise the rest</text>
+
+  <!-- next -->
+  <rect class="box" x="120" y="510" width="190" height="48" rx="9"/>
+  <text class="t" x="215" y="530" text-anchor="middle">Next canvas</text>
+  <text class="s" x="215" y="547" text-anchor="middle">x_{t-1}</text>
+
+  <!-- edges -->
+  <path class="edge" d="M215,72 V148" marker-end="url(#ah)"/>
+  <path class="edge" d="M310,174 H428" marker-end="url(#ah)"/>
+  <text class="cap" x="370" y="167" text-anchor="middle">predict</text>
+
+  <path class="edgei" d="M225,198 L320,232" marker-end="url(#ahi)"/>
+  <path class="edgei" d="M520,198 L420,232" marker-end="url(#ahi)"/>
+  <path class="edgei" d="M345,279 L240,328" marker-end="url(#ahi)"/>
+
+  <path class="edgei" d="M230,378 L312,414" marker-end="url(#ahi)"/>
+  <path class="edgei" d="M520,378 L428,414" marker-end="url(#ahi)"/>
+  <path class="edgei" d="M350,460 L245,508" marker-end="url(#ahi)"/>
+
+  <!-- loop back -->
+  <path class="edge" d="M120,534 H60 V174 H118" marker-end="url(#ah)"/>
+  <text class="cap" x="52" y="350" text-anchor="middle" transform="rotate(-90 52 350)">loop while steps remain</text>
+
+  <!-- stop -->
+  <path class="edge" d="M310,534 H470" marker-end="url(#ah)" stroke-dasharray="4 4"/>
+  <text class="cap" x="560" y="525" text-anchor="middle">stop:</text>
+  <text class="cap" x="560" y="539" text-anchor="middle">max steps reached</text>
+  <text class="cap" x="560" y="553" text-anchor="middle">or adaptive stop</text>
+</svg>

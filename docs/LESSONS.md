@@ -12,6 +12,9 @@ that cost us debugging time. Record new ones here as `L-#` (stable, never renumb
 | L-4 | inference       | "No chat template" has 4 causes (base / not-downloaded / forgotten / clone) — don't guess the fix |
 | L-5 | mps / dtype     | fp16 is the MPS default; bf16-on-MPS rejected (~3× slower); fp16≈fp32 because reductions upcast |
 | L-6 | gguf / tokenizer| One deliberate "guess": GGUF `tokenizer.ggml.model` defaults to `gpt2` BPE — see why |
+| L-7 | parity / testing| Don't seed-match two stochastic loops & compare tokens — drive ONE trajectory, compare logits |
+| L-8 | parity / testing| Test sequences **longer than the sliding window** — short prompts hide window bugs (cf. T-2) |
+| L-9 | parity / testing| Self-consistency (ours==ours) ≠ ref-parity; know exactly what a green check proves |
 
 ---
 
@@ -209,3 +212,58 @@ Why this default (and not a hard-fail like everything else):
 So this is a scoped exception, documented on purpose. If it ever bites (a non-GPT-2 model with
 the key omitted), flip the default to a hard-fail — the cost is a clearer error, the benefit is
 consistency with the rest of the loader.
+
+---
+
+## L-7 · Don't seed-match two stochastic loops and compare tokens — compare logits on one trajectory
+
+When parity-checking a **sampling** loop (diffusion denoise, AR sampling, anything with
+`multinomial`/`randint`), the tempting approach is: run our loop and the reference loop with the
+same seed, compare the output tokens. **This is fragile and gives false failures.** Any
+boundary-sensitive *discrete* decision — a stopping threshold, an `argmax` near a tie, an accept
+cutoff — can flip on a **~1e-6 numerical difference** between two correct implementations. One flip
+changes how many RNG draws a step consumes (e.g. an extra `renoise`), which **desyncs the RNG
+streams**, and from there the trajectories diverge completely even though nothing is wrong.
+
+This bit us in diffusion_gemma rung 5: a 2-block token comparison matched block 0 exactly but
+diverged at block 1, purely because the adaptive stop (`mean entropy < 0.005`) triggered one step
+later on one side (same argmax block, but one extra random draw).
+
+**Do instead:** drive a **single** trajectory and compare the **continuous** quantity — the
+per-step **logits** (cosine / max|Δ|), with both implementations fed the *identical* intermediate
+state. That's apples-to-apples and tolerant of the inevitable 1e-6 float drift. Reserve exact
+token equality for fully-deterministic settings (greedy + seed-exact `randint` only, no
+threshold-flips), and even then keep the number of steps small.
+
+---
+
+## L-8 · Exercise sequences longer than the sliding window — short prompts hide window bugs
+
+A sliding-window attention bug is **invisible** on short prompts: if every test sequence is shorter
+than the window, the band mask never clips anything and a *broken* sliding implementation behaves
+identically to a correct one. (This is exactly what `TODOS.md` **T-2** warns about.)
+
+diffusion_gemma rungs 1–4 all used ≤6 tokens with `sliding_window=8`, so the window never bit and
+everything passed. Rung 5's second block pushed the context to 14 tokens (> window) and **immediately**
+exposed a real divergence: the reference clips its sliding-layer KV cache to the last `window`
+entries while our decoder read the **full** cache — cosine dropped from 1.0 to ~0.5 on the first
+step over the window. Tracked as a diffusion_gemma rung-6 correctness item (and a live instance of T-2).
+
+**Rule:** any parity gate touching sliding-window layers must include a prompt **longer than the
+window**, and ideally assert a prefill-vs-incremental-decode equivalence at that length. A short
+green test proves nothing about the window.
+
+---
+
+## L-9 · Self-consistency (ours == ours) is not the same as ref-parity
+
+A check can be **true and useful yet prove less than it appears.** In diffusion_gemma rung 5 an
+`incremental-encode == full-prefill` check passed cleanly — and it *is* a real property (re-encoding
+a committed block equals encoding the whole sequence from scratch). But it compared **our**
+incremental path to **our** full path (self-consistency), not to the reference, and it used the same
+short sequences as everything else. So a green check gave false confidence that the cache was
+"verified" while a long-context divergence from the reference (L-8) sat underneath it.
+
+**Rule:** be explicit about what each check covers. Self-consistency (ours==ours) catches internal
+contradictions but **inherits every blind spot** of the inputs you feed it; only an *ours-vs-reference*
+check at the regime that actually matters (here, context > window) proves parity there.
