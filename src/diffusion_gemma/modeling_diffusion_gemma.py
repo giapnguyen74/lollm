@@ -57,17 +57,21 @@ class Layer(nn.Module):
         return x * self.layer_scalar
 
     def encode(self, x, cos, sin, past_kv=None, return_kv=False):
+        # 1. ATTENTION sub-block (causal, write-cache): x = x + post_norm(attn(in_norm(x)))
         residual = x
         a = self.self_attn.causal(self.input_layernorm(x), cos, sin, past_kv=past_kv, return_kv=return_kv)
         a, kv = a if return_kv else (a, None)
         x = residual + self.post_attention_layernorm(a)
+        # 2. FFN sub-block (parallel dense-MLP + routed-MoE): x = x + post_norm(dense + moe)
         x = self._ffn(x)
         return (x, kv) if return_kv else x
 
     def denoise(self, x, cos, sin, enc_k, enc_v):
+        # 1. ATTENTION sub-block (bidirectional, read encoder cache): x = x + post_norm(cross(in_norm(x)))
         residual = x
         a = self.self_attn.cross(self.input_layernorm(x), cos, sin, enc_k, enc_v)
         x = residual + self.post_attention_layernorm(a)
+        # 2. FFN sub-block (same parallel dense-MLP + routed-MoE as encode)
         return self._ffn(x)
 
 
@@ -94,19 +98,27 @@ class DiffusionGemmaModel(nn.Module):
         return self.rope_sliding(x, pos), self.rope_full(x, pos)
 
     def to_logits(self, hidden):
-        """lm_head (tied to embed_tokens) + Gemma final-logit soft-cap, in fp32."""
+        """lm_head (tied to embed_tokens) + optional Gemma final-logit soft-cap, in fp32."""
         logits = F.linear(hidden, self.embed_tokens.weight).float()
         sc = self.final_logit_softcapping
+        # 0.0 / None → soft-cap DISABLED (Gemma semantics; the reference guards on
+        # `is not None`). Guard here too: dividing by a 0.0 cap gives tanh(inf)*0 = nan.
+        if not sc:
+            return logits
         return torch.tanh(logits / sc) * sc
 
     def prefill(self, input_ids, past_cache=None, position_ids=None, return_cache=True):
         """Causal encode (the 'encoder' role). `past_cache` + `position_ids` give INCREMENTAL encoding:
         encode new tokens at offset positions, appending to the cache (re-encoding committed blocks).
         Sliding layers clip their cache to the last `window-1` K/V (matches the reference; bounded memory)."""
+        # 1. EMBED — token ids → vectors, scaled by sqrt(hidden) (Gemma)
         x = self.embed_tokens(input_ids) * self.embed_scale
+        # 2. POSITIONS — absolute positions (caller offsets via position_ids for incremental encode)
+        #    + dual RoPE cos/sin (sliding table vs full/proportional table, picked per layer below)
         if position_ids is None:
             position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None]
         cs_s, cs_f = self._cossin(x, position_ids)
+        # 3. DECODER STACK — N causal layers; each (optionally) appends + clips its KV cache
         cache = []
         w = self.cfg.sliding_window - 1
         for i, layer in enumerate(self.layers):
@@ -119,27 +131,31 @@ class DiffusionGemmaModel(nn.Module):
                 cache.append(kv)
             else:
                 x = layer.encode(x, cos, sin, past_kv=past_kv)
+        # 4. FINAL NORM — (logits are produced separately by `to_logits`)
         x = self.norm(x)
         return (x, cache) if return_cache else x
 
     def denoise(self, canvas_ids, encoder_cache, self_conditioning_logits=None):
         """Bidirectional canvas pass (the 'decoder' role), reading the read-only encoder cache."""
+        # 1. EMBED — canvas token ids → scaled vectors
         emb = self.embed_tokens(canvas_ids) * self.embed_scale
-        # self-conditioning: fold in last step's prediction (zeros on the first step)
+        # 2. SELF-CONDITION — fold in last step's prediction as a soft embedding (zeros on step 0),
+        #    always passed through the self_conditioning block (its post_norm runs every step)
         if self_conditioning_logits is not None:
             probs = self_conditioning_logits.softmax(dim=-1, dtype=torch.float32).to(emb.dtype)
             soft = torch.matmul(probs, self.embed_tokens.weight) * self.embed_scale
         else:
             soft = torch.zeros_like(emb)
         x = self.self_conditioning(emb, soft)                   # always applied (post_norm)
-
-        # canvas positions continue AFTER the encoder sequence. Use a GLOBAL layer's cache for the true
-        # length — sliding layers are clipped to the window, so cache[0] would under-count.
+        # 3. POSITIONS — canvas continues AFTER the encoder sequence. Read the true length from a
+        #    GLOBAL layer's cache (sliding layers are clipped to the window, so cache[0] under-counts)
         s_enc = encoder_cache[self.cfg.first_global_layer][0].shape[2]
         pos = torch.arange(s_enc, s_enc + canvas_ids.shape[1], device=canvas_ids.device)[None]
         cs_s, cs_f = self._cossin(x, pos)
+        # 4. DECODER STACK — N bidirectional layers, each reading the read-only encoder cache by concat
         for i, layer in enumerate(self.layers):
             cos, sin = cs_s if self.cfg.is_sliding(i) else cs_f
             enc_k, enc_v = encoder_cache[i]
             x = layer.denoise(x, cos, sin, enc_k, enc_v)
+        # 5. FINAL NORM
         return self.norm(x)

@@ -133,16 +133,18 @@ class Attention(nn.Module):
     def causal(self, x, cos, sin, past_kv=None, return_kv=False):
         """Prefill / re-encode: offset-causal (+ sliding band), optionally appending to `past_kv`."""
         B, S, _ = x.shape
+        # 1. PROJECT to Q/K/V + QK-norm + RoPE (global layers: V reuses the K projection, no RoPE on V)
         q, k_new, v_new = self._qkv(x, cos, sin)                 # new tokens' q,k,v (B,*,S,D)
-        if past_kv is not None:                                  # incremental: prepend cached K/V
+        # 2. KV CACHE — incremental encode: prepend this layer's cached K/V (pre-repeat)
+        if past_kv is not None:
             pk, pv = past_kv
             k_kv, v_kv = torch.cat([pk, k_new], dim=2), torch.cat([pv, v_new], dim=2)
         else:
             k_kv, v_kv = k_new, v_new
+        # 3. GQA EXPAND — repeat KV heads to match query heads
         k, v = repeat_kv(k_kv, self.groups), repeat_kv(v_kv, self.groups)
-
-        # manual OFFSET-causal (+ sliding band) attention, scale 1.0, fp32 softmax — matches HF eager.
-        # past_len=0 → plain prefill; past_len>0 → new tokens attend to [cache ; themselves] causally.
+        # 4. ATTENTION — manual OFFSET-causal (+ sliding band), scale 1.0, fp32 softmax (matches HF eager).
+        #    past_len=0 → plain prefill; past_len>0 → new tokens attend to [cache ; themselves] causally.
         total = k_kv.shape[2]
         past_len = total - S
         scores = torch.matmul(q, k.transpose(2, 3)) * 1.0
@@ -153,6 +155,7 @@ class Attention(nn.Module):
             allowed = allowed & ((qpos[:, None] - kpos[None, :]) < self.sliding_window)
         scores = scores.masked_fill(~allowed[None, None], float("-inf"))
         attn = torch.softmax(scores.float(), dim=-1).to(q.dtype)
+        # 5. MERGE heads + output projection
         out = torch.matmul(attn, v).transpose(1, 2).reshape(B, S, -1)
         out = self.o_proj(out)
         return (out, (k_kv, v_kv)) if return_kv else out         # cache = accumulated pre-repeat K/V
@@ -161,14 +164,18 @@ class Attention(nn.Module):
         """Denoise: bidirectional over the canvas, reading the read-only encoder cache by concat.
         enc_k, enc_v: the encoder's cached (B, kv_heads, S_enc, D) for THIS layer (pre-repeat)."""
         B, S, _ = x.shape
+        # 1. PROJECT canvas to Q/K/V + QK-norm + RoPE (same _qkv as causal)
         q, k_can, v_can = self._qkv(x, cos, sin)                 # canvas q,k,v
-        k = torch.cat([enc_k, k_can], dim=2)                     # [encoder ; canvas] keys
+        # 2. CONCAT — read-only encoder K/V ; canvas K/V → keys/values are [encoder ; canvas]
+        k = torch.cat([enc_k, k_can], dim=2)
         v = torch.cat([enc_v, v_can], dim=2)
+        # 3. GQA EXPAND — repeat KV heads to match query heads
         k, v = repeat_kv(k, self.groups), repeat_kv(v, self.groups)
-        # no-padding dynamic-cache case → HF mask=None → FULL bidirectional (the clipped sliding cache
-        # already enforces the window on the cache side).
+        # 4. ATTENTION — FULL bidirectional, no mask: the no-padding dynamic-cache case is HF mask=None,
+        #    and the clipped sliding cache already enforces the window on the cache side.
         scores = torch.matmul(q, k.transpose(2, 3)) * 1.0
         attn = torch.softmax(scores.float(), dim=-1).to(q.dtype)
+        # 5. MERGE heads + output projection
         out = torch.matmul(attn, v).transpose(1, 2).reshape(B, S, -1)
         return self.o_proj(out)
 
