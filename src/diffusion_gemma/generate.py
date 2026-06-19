@@ -28,7 +28,7 @@ def generate_diffusion(model, sampler, stop, prompt, *, max_new_canvases, max_de
 
     cache = model.prefill(prompt, return_cache=True)[1]          # 1. prefill the prompt (causal)
     blocks = []
-    for _ in range(max_new_canvases):
+    for i in range(max_new_canvases):
         def forward_logits(canvas, self_cond):                  # denoise reads the (read-only) cache
             return model.to_logits(model.denoise(canvas, cache, self_conditioning_logits=self_cond))
 
@@ -40,6 +40,8 @@ def generate_diffusion(model, sampler, stop, prompt, *, max_new_canvases, max_de
             on_block(block)                                     # stream the committed canvas
         if eos is not None and bool(torch.isin(block, eos).any()):
             break                                               # eos in the block → stop
+        if i == max_new_canvases - 1:
+            break                                               # last canvas → skip the re-encode (no next block)
         # 2. commit: re-encode the finished block into the cache (causal), growing it by one canvas
         clen = cache[model.cfg.first_global_layer][0].shape[2]  # true length (sliding caches are clipped)
         pos = torch.arange(clen, clen + block.shape[1], device=device)[None]

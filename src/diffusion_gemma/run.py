@@ -83,6 +83,9 @@ def main():
                     help="visualise diffusion: redraw the canvas each denoise step (mask ▒ → confident "
                          "tokens). Slower (decodes + redraws every step); best with --max-new-canvases 1")
     ap.add_argument("--demo-delay", type=float, default=0.04, help="seconds between demo frames")
+    ap.add_argument("--max-denoising-steps", type=int, default=None,
+                    help="cap denoise steps per canvas (default: from generation_config, 48). Lower = "
+                         "snappier demo, slightly rougher text")
     args = ap.parse_args()
 
     device = pick_device(args.device)
@@ -123,25 +126,25 @@ def main():
     print(f"\n>>> {args.prompt}\n", file=sys.stderr)
     n_tok = [0]
     g0 = time.time()
-    gkw = dict(max_new_canvases=args.max_new_canvases, max_denoising_steps=_g(gen, "max_denoising_steps", 48),
+    max_steps = args.max_denoising_steps or _g(gen, "max_denoising_steps", 48)
+    gkw = dict(max_new_canvases=args.max_new_canvases, max_denoising_steps=max_steps,
                t_min=_g(gen, "t_min", 0.4), t_max=_g(gen, "t_max", 0.8), eos_ids=_g(gen, "eos_token_id", None))
 
     if args.demo:
         # Visualise the reverse-diffusion: each step, accepted (confident) positions show their token,
         # the rest stay masked ▒. Watch the canvas converge from noise → text. (Reads back to CPU and
         # redraws every step → slow; that's the cost of the visualization.)
+        step_ctr = [0]
+
         def on_step(cur_step, argmax, accepted):
+            step_ctr[0] += 1
             am, acc = argmax[0].tolist(), accepted[0].tolist()
-            cells = []
-            for tid, a in zip(am, acc):
-                if a:
-                    s = tok.decode([tid]).replace("\n", " ") or "·"
-                    cells.append(s)
-                else:
-                    cells.append("▒")
+            cells = ["".join(tok.decode([tid]).replace("\n", " ") or "·") if a else "▒"
+                     for tid, a in zip(am, acc)]
             filled = sum(acc)
             sys.stdout.write("\033[H\033[J")                  # cursor home + clear screen
-            sys.stdout.write(f">>> {args.prompt}\n[denoising — {filled}/{len(acc)} tokens confident]\n\n")
+            sys.stdout.write(f">>> {args.prompt}\n[denoise step {step_ctr[0]}/{max_steps} — "
+                             f"{filled}/{len(acc)} tokens confident]\n\n")
             sys.stdout.write("".join(cells) + "\n")
             sys.stdout.flush()
             time.sleep(args.demo_delay)
