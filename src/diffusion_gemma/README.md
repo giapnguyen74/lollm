@@ -60,7 +60,13 @@ not here. Here, the real check is `compare_logits.py`.
 ```bash
 python src/diffusion_gemma/run.py --prompt "Why is the sky blue?"
 python src/diffusion_gemma/run.py --prompt "..." --max-new-canvases 6
+python src/diffusion_gemma/run.py --prompt "..." --demo --max-new-canvases 1   # watch it denoise
 ```
+
+**`--demo`** visualizes the reverse diffusion: it redraws the canvas every denoise step, showing
+confident (accepted) positions as their token and the rest as `▒`, so you watch the block converge
+from noise → text. It decodes + redraws each step, so it's slower (that's the cost of the view) —
+pair it with `--max-new-canvases 1` for a clean single-canvas animation.
 
 It loads the checkpoint to CPU, builds the single `DiffusionGemmaModel` on `meta` + **assigns** the
 reference tensors, drops the reference, then **streams each tensor onto the GPU freeing the CPU source**

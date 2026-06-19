@@ -17,10 +17,11 @@ from sampler import denoise_block
 
 @torch.no_grad()
 def generate_diffusion(model, sampler, stop, prompt, *, max_new_canvases, max_denoising_steps,
-                       t_min, t_max, eos_ids=None, sample=True, on_block=None):
+                       t_min, t_max, eos_ids=None, sample=True, on_block=None, on_step=None):
     """`model` = the single `DiffusionGemmaModel` (run via `.prefill` / `.denoise`); returns the
     generated token ids (canvases concatenated). `on_block(block)` — if given — is called with each
-    finished canvas as it commits (block-level streaming)."""
+    finished canvas as it commits (block-level streaming). `on_step(cur_step, argmax, accepted_mask)`
+    — if given — is called each denoise step (for the `--demo` visualization)."""
     device = prompt.device
     batch = prompt.shape[0]
     eos = torch.tensor(list(eos_ids), device=device) if eos_ids else None
@@ -32,7 +33,8 @@ def generate_diffusion(model, sampler, stop, prompt, *, max_new_canvases, max_de
             return model.to_logits(model.denoise(canvas, cache, self_conditioning_logits=self_cond))
 
         block = denoise_block(forward_logits, sampler, stop, max_denoising_steps=max_denoising_steps,
-                              t_min=t_min, t_max=t_max, batch_size=batch, device=device, sample=sample)
+                              t_min=t_min, t_max=t_max, batch_size=batch, device=device, sample=sample,
+                              on_step=on_step)
         blocks.append(block)
         if on_block is not None:
             on_block(block)                                     # stream the committed canvas

@@ -85,11 +85,12 @@ class StableAndConfidentStopping:
 
 
 def denoise_block(forward_logits, sampler: EntropyBoundSampler, stop, *, max_denoising_steps,
-                  t_min, t_max, batch_size, device, sample=True):
+                  t_min, t_max, batch_size, device, sample=True, on_step=None):
     """One block = inner denoise loop. `forward_logits(canvas, self_cond) -> softcapped logits`.
     Returns the finished block (the last step's argmax canvas). Mirrors transformers `generate`'s
     inner loop: cur_step = N..1, accept → renoise, carry processed logits as next self-cond, stop
-    early when all batch items are finished. `sample=False` = greedy denoiser (deterministic)."""
+    early when all batch items are finished. `sample=False` = greedy denoiser (deterministic).
+    `on_step(cur_step, argmax_canvas, accepted_mask)` — if given — is called each step (for the demo)."""
     current = sampler.initialize_canvas(batch_size, device)
     argmax = current
     self_cond = None
@@ -108,6 +109,8 @@ def denoise_block(forward_logits, sampler: EntropyBoundSampler, stop, *, max_den
         argmax = proc.argmax(dim=-1)
         accepted = sampler.accept_canvas(current, denoiser, proc, cur_step)
         current = sampler.renoise_canvas(accepted, cur_step)
+        if on_step is not None:                              # demo: show the canvas refine
+            on_step(cur_step, argmax, sampler.accepted_token_mask)
         if stop is not None:
             finished = finished | stop(argmax, proc)
             if torch.all(finished):
