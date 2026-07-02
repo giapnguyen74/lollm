@@ -17,6 +17,12 @@ from .blocks import RMSNorm, RoPE, Attention, MLP
 from .kv import Qwen2Cache
 
 
+# Residual write-backs this family taps, in order — the site names DecoderLayer.forward
+# passes to self.hook_fn (see the shared seam in src/hook.py). Consumed by
+# modification/capture.py to enumerate site names for extraction.
+SITES = ("post_attn", "out")
+
+
 class DecoderLayer(nn.Module):
     """One transformer block: pre-norm residual attention, then pre-norm MLP."""
 
@@ -26,13 +32,20 @@ class DecoderLayer(nn.Module):
         self.self_attn = Attention(cfg)
         self.post_attention_layernorm = RMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
         self.mlp = MLP(cfg)
+        # Hook function 
+        self.hook_fn = None
+
 
     def forward(self, x, cos, sin, cache=None, layer_idx=0):
         # 1. ATTENTION sub-block (mixes info ACROSS tokens): x = x + attn(norm(x)).
         h = self.self_attn(self.input_layernorm(x), cos, sin, cache, layer_idx)
         x = x + h
+        if self.hook_fn:
+            x = self.hook_fn(x, "post_attn")
         # 2. MLP sub-block (transforms EACH token on its own): x = x + mlp(norm(x)).
         x = x + self.mlp(self.post_attention_layernorm(x))
+        if self.hook_fn:
+            x = self.hook_fn(x, "out")
         return x
 
 
